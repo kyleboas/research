@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 import time
 import uuid
 
@@ -12,6 +13,10 @@ from .config import load_settings
 from .ingestion.dedupe import filter_existing_records, filter_existing_youtube_records
 from .ingestion.rss import fetch_all_feeds, load_feed_configs_from_env
 from .ingestion.youtube import fetch_all_channels, load_youtube_channel_configs_from_env
+from .generation.critique_pass import run_critique_pass
+from .generation.draft_pass import run_draft_pass
+from .generation.research_pass import run_research_pass
+from .generation.revision_pass import run_revision_pass
 from .processing.chunking import chunk_text
 from .processing.embeddings import embed_chunks, upsert_embeddings
 
@@ -279,7 +284,111 @@ def run_embedding(*, pipeline_run_id: str | None = None) -> str:
 
 def run_generation(*, pipeline_run_id: str | None = None) -> str:
     pipeline_run_id = pipeline_run_id or str(uuid.uuid4())
-    _run_stage("generation", pipeline_run_id)
+    start = time.perf_counter()
+    _log_event(pipeline_run_id=pipeline_run_id, stage="generation", event="start")
+
+    settings = load_settings()
+    topic = os.getenv("REPORT_TOPIC", "Weekly AI research roundup")
+    artifacts_dir = Path(os.getenv("REPORT_ARTIFACTS_DIR", "artifacts/reports")) / pipeline_run_id
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    import psycopg
+
+    with psycopg.connect(settings.postgres_dsn) as connection:
+        research_start = time.perf_counter()
+        context_packet = run_research_pass(connection, topic=topic, settings=settings)
+        research_elapsed = time.perf_counter() - research_start
+
+        draft_start = time.perf_counter()
+        draft_markdown = run_draft_pass(topic=topic, context_packet=context_packet, settings=settings)
+        draft_elapsed = time.perf_counter() - draft_start
+
+        critique_start = time.perf_counter()
+        critique_markdown = run_critique_pass(
+            topic=topic,
+            context_packet=context_packet,
+            draft_markdown=draft_markdown,
+            settings=settings,
+        )
+        critique_elapsed = time.perf_counter() - critique_start
+
+        revision_start = time.perf_counter()
+        final_markdown = run_revision_pass(
+            topic=topic,
+            context_packet=context_packet,
+            draft_markdown=draft_markdown,
+            critique_markdown=critique_markdown,
+            settings=settings,
+        )
+        revision_elapsed = time.perf_counter() - revision_start
+
+        stage_metrics = {
+            "topic": topic,
+            "query_count": len(context_packet.queries),
+            "context_chunks": len(context_packet.chunks),
+            "research_elapsed_s": round(research_elapsed, 3),
+            "draft_elapsed_s": round(draft_elapsed, 3),
+            "critique_elapsed_s": round(critique_elapsed, 3),
+            "revision_elapsed_s": round(revision_elapsed, 3),
+        }
+
+        draft_path = artifacts_dir / "draft.md"
+        critique_path = artifacts_dir / "critique.md"
+        final_path = artifacts_dir / "final.md"
+        context_path = artifacts_dir / "context_packet.json"
+
+        draft_path.write_text(draft_markdown, encoding="utf-8")
+        critique_path.write_text(critique_markdown, encoding="utf-8")
+        final_path.write_text(final_markdown, encoding="utf-8")
+        context_path.write_text(context_packet.to_json(), encoding="utf-8")
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO reports (report_type, title, content, metadata)
+                VALUES (%s, %s, %s, %s::jsonb)
+                """,
+                (
+                    "draft",
+                    f"Draft: {topic}",
+                    draft_markdown,
+                    json.dumps({
+                        "pipeline_run_id": pipeline_run_id,
+                        "stage_metrics": stage_metrics,
+                        "artifact_path": str(draft_path),
+                    }),
+                ),
+            )
+            cursor.execute(
+                """
+                INSERT INTO reports (report_type, title, content, metadata)
+                VALUES (%s, %s, %s, %s::jsonb)
+                """,
+                (
+                    "final",
+                    f"Final: {topic}",
+                    final_markdown,
+                    json.dumps({
+                        "pipeline_run_id": pipeline_run_id,
+                        "stage_metrics": stage_metrics,
+                        "artifact_path": str(final_path),
+                        "critique_artifact_path": str(critique_path),
+                        "context_artifact_path": str(context_path),
+                    }),
+                ),
+            )
+        connection.commit()
+
+    elapsed = time.perf_counter() - start
+    _log_event(
+        pipeline_run_id=pipeline_run_id,
+        stage="generation",
+        event="complete",
+        elapsed_s=elapsed,
+        **stage_metrics,
+        draft_artifact=str(draft_path),
+        final_artifact=str(final_path),
+    )
     return pipeline_run_id
 
 
