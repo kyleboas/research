@@ -19,6 +19,9 @@ from .generation.research_pass import run_research_pass
 from .generation.revision_pass import run_revision_pass
 from .processing.chunking import chunk_text
 from .processing.embeddings import embed_chunks, upsert_embeddings
+from .verification.claims import extract_claims
+from .verification.nli_check import check_claims_against_citations
+from .verification.scoring import score_claim_results
 
 LOGGER = logging.getLogger("research.pipeline")
 if not LOGGER.handlers:
@@ -394,7 +397,142 @@ def run_generation(*, pipeline_run_id: str | None = None) -> str:
 
 def run_verification(*, pipeline_run_id: str | None = None) -> str:
     pipeline_run_id = pipeline_run_id or str(uuid.uuid4())
-    _run_stage("verification", pipeline_run_id)
+    start = time.perf_counter()
+    _log_event(pipeline_run_id=pipeline_run_id, stage="verification", event="start")
+
+    settings = load_settings()
+
+    import psycopg
+
+    claims_extracted = 0
+    with psycopg.connect(settings.postgres_dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, content
+                FROM reports
+                WHERE report_type = 'final'
+                  AND metadata ->> 'pipeline_run_id' = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (pipeline_run_id,),
+            )
+            report_row = cursor.fetchone()
+
+        if report_row is None:
+            elapsed = time.perf_counter() - start
+            _log_event(
+                pipeline_run_id=pipeline_run_id,
+                stage="verification",
+                event="complete",
+                elapsed_s=elapsed,
+                report_found=False,
+            )
+            return pipeline_run_id
+
+        report_id, report_markdown = report_row
+        claims = extract_claims(report_markdown)
+        claims_extracted = len(claims)
+
+        cited_chunk_ids = sorted({chunk_id for claim in claims for chunk_id in claim.cited_chunk_ids})
+        chunk_text_by_id: dict[int, str] = {}
+        source_id_by_chunk_id: dict[int, int | None] = {}
+
+        if cited_chunk_ids:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, source_id, content
+                    FROM chunks
+                    WHERE id = ANY(%s)
+                    """,
+                    (cited_chunk_ids,),
+                )
+                for chunk_id, source_id, content in cursor.fetchall():
+                    chunk_text_by_id[chunk_id] = content
+                    source_id_by_chunk_id[chunk_id] = source_id
+
+        verification_results = check_claims_against_citations(claims, chunk_text_by_id)
+        score = score_claim_results(verification_results)
+        result_by_claim_id = {result.claim_id: result for result in verification_results}
+
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM claims WHERE report_id = %s", (report_id,))
+
+            claim_rows = []
+            for claim in claims:
+                result = result_by_claim_id[claim.claim_id]
+                primary_chunk_id = claim.cited_chunk_ids[0] if claim.cited_chunk_ids else None
+                source_id = source_id_by_chunk_id.get(primary_chunk_id) if primary_chunk_id is not None else None
+                claim_rows.append(
+                    (
+                        report_id,
+                        source_id,
+                        primary_chunk_id,
+                        claim.text,
+                        result.score,
+                        json.dumps(
+                            {
+                                "claim_id": claim.claim_id,
+                                "cited_chunk_ids": list(claim.cited_chunk_ids),
+                                "evaluated_chunk_ids": list(result.evaluated_chunk_ids),
+                                "verification_status": result.status,
+                                "verification_score": result.score,
+                            }
+                        ),
+                    )
+                )
+
+            if claim_rows:
+                cursor.executemany(
+                    """
+                    INSERT INTO claims (report_id, source_id, chunk_id, claim_text, confidence, metadata)
+                    VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                    """,
+                    claim_rows,
+                )
+
+            cursor.execute(
+                """
+                UPDATE reports
+                SET metadata = jsonb_set(
+                    metadata,
+                    '{verification}',
+                    %s::jsonb,
+                    true
+                )
+                WHERE id = %s
+                """,
+                (
+                    json.dumps(
+                        {
+                            "total_claims": score.total_claims,
+                            "supported_claims": score.supported_claims,
+                            "uncertain_claims": score.uncertain_claims,
+                            "unsupported_claims": score.unsupported_claims,
+                            "quality_score": score.quality_score,
+                        }
+                    ),
+                    report_id,
+                ),
+            )
+
+        connection.commit()
+
+    elapsed = time.perf_counter() - start
+    _log_event(
+        pipeline_run_id=pipeline_run_id,
+        stage="verification",
+        event="complete",
+        elapsed_s=elapsed,
+        report_found=True,
+        claims_extracted=claims_extracted,
+        quality_score=score.quality_score,
+        supported_claims=score.supported_claims,
+        uncertain_claims=score.uncertain_claims,
+        unsupported_claims=score.unsupported_claims,
+    )
     return pipeline_run_id
 
 
