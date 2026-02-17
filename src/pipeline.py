@@ -13,6 +13,7 @@ from .ingestion.dedupe import filter_existing_records, filter_existing_youtube_r
 from .ingestion.rss import fetch_all_feeds, load_feed_configs_from_env
 from .ingestion.youtube import fetch_all_channels, load_youtube_channel_configs_from_env
 from .processing.chunking import chunk_text
+from .processing.embeddings import embed_chunks, upsert_embeddings
 
 LOGGER = logging.getLogger("research.pipeline")
 if not LOGGER.handlers:
@@ -130,12 +131,15 @@ def run_embedding(*, pipeline_run_id: str | None = None) -> str:
     settings = load_settings()
     window_size = int(os.getenv("CHUNK_WINDOW_SIZE", "200"))
     overlap = int(os.getenv("CHUNK_OVERLAP", "40"))
+    embedding_batch_size = int(os.getenv("EMBEDDING_BATCH_SIZE", "64"))
+    embedding_model_override = os.getenv("OPENAI_EMBEDDING_MODEL_OVERRIDE") or None
 
     import psycopg
 
     sources_processed = 0
     chunks_created = 0
     chunks_updated = 0
+    embeddings_upserted = 0
 
     with psycopg.connect(settings.postgres_dsn) as connection:
         with connection.cursor() as cursor:
@@ -230,6 +234,31 @@ def run_embedding(*, pipeline_run_id: str | None = None) -> str:
                         (source_id, stale_indexes),
                     )
 
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT c.id, c.content
+                FROM chunks AS c
+                LEFT JOIN embeddings AS e
+                    ON e.chunk_id = c.id
+                    AND e.model = %s
+                WHERE e.id IS NULL
+                   OR c.updated_at > e.updated_at
+                ORDER BY c.id
+                """,
+                (embedding_model_override or settings.openai_embedding_model,),
+            )
+            chunks_to_embed = cursor.fetchall()
+
+        if chunks_to_embed:
+            embedded_rows = embed_chunks(
+                chunks=chunks_to_embed,
+                settings=settings,
+                model=embedding_model_override,
+                batch_size=embedding_batch_size,
+            )
+            embeddings_upserted = upsert_embeddings(connection, embedded_rows)
+
         connection.commit()
 
     elapsed = time.perf_counter() - start
@@ -241,6 +270,8 @@ def run_embedding(*, pipeline_run_id: str | None = None) -> str:
         sources_processed=sources_processed,
         chunks_created=chunks_created,
         chunks_updated=chunks_updated,
+        embeddings_upserted=embeddings_upserted,
+        embedding_model=embedding_model_override or settings.openai_embedding_model,
     )
 
     return pipeline_run_id
