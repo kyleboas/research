@@ -53,6 +53,29 @@ REVISION_USER_TEMPLATE: Final[str] = (
 )
 
 
+TREND_SYSTEM: Final[str] = (
+    "You are a football research analyst specialising in identifying emerging tactical and strategic trends. "
+    "Your task is to surface patterns that are gaining momentum across multiple sources — ideas being discussed "
+    "by analysts, coaches, and reporters that signal a shift in how the game is evolving. "
+    "Avoid obvious or already-mainstream topics. Focus on what is new and gaining traction."
+)
+
+TREND_USER_TEMPLATE: Final[str] = (
+    "Here are titles and excerpts from recent football articles and content:\n\n"
+    "{sources_summary}\n\n"
+    "Based on this content, identify the single most significant **emerging trend** in football that:\n"
+    "1. Appears across multiple sources (not a one-off story)\n"
+    "2. Is gaining traction but has not yet become mainstream\n"
+    "3. Has tactical, strategic, or analytical significance\n\n"
+    "Return ONLY a concise topic phrase (10-20 words) that captures this trend. "
+    "Do not include explanations, bullet points, or any other text — just the topic phrase."
+)
+
+
+def build_trend_prompt(*, sources_summary: str) -> tuple[str, str]:
+    return TREND_SYSTEM, TREND_USER_TEMPLATE.format(sources_summary=sources_summary)
+
+
 def build_research_prompt(topic: str) -> tuple[str, str]:
     return STABLE_SYSTEM_PREFIX, RESEARCH_USER_TEMPLATE.format(topic=topic)
 
