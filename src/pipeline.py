@@ -8,8 +8,9 @@ import time
 import uuid
 
 from .config import load_settings
-from .ingestion.dedupe import filter_existing_records
+from .ingestion.dedupe import filter_existing_records, filter_existing_youtube_records
 from .ingestion.rss import fetch_all_feeds, load_feed_configs_from_env
+from .ingestion.youtube import fetch_all_channels, load_youtube_channel_configs_from_env
 
 LOGGER = logging.getLogger("research.pipeline")
 if not LOGGER.handlers:
@@ -39,6 +40,19 @@ def _run_stage(stage: str, pipeline_run_id: str) -> None:
     _log_event(pipeline_run_id=pipeline_run_id, stage=stage, event="complete", elapsed_s=elapsed)
 
 
+def _source_metadata(record: object) -> dict[str, object]:
+    metadata: dict[str, object] = {}
+    for attribute in ("url", "content", "feed_name", "guid", "channel_id", "video_id"):
+        value = getattr(record, attribute, None)
+        if value not in (None, ""):
+            metadata[attribute] = value
+
+    if "feed_name" in metadata:
+        metadata["feed"] = metadata.pop("feed_name")
+
+    return metadata
+
+
 def _insert_sources(connection: object, records: list[object]) -> int:
     if not records:
         return 0
@@ -56,14 +70,7 @@ def _insert_sources(connection: object, records: list[object]) -> int:
                     record.source_key,
                     record.title,
                     record.published_at,
-                    json.dumps(
-                        {
-                            "url": record.url,
-                            "content": record.content,
-                            "feed": record.feed_name,
-                            "guid": record.guid,
-                        }
-                    ),
+                    json.dumps(_source_metadata(record)),
                 )
                 for record in records
             ],
@@ -79,14 +86,20 @@ def run_ingestion(*, pipeline_run_id: str | None = None) -> str:
 
     settings = load_settings()
     feed_configs = load_feed_configs_from_env()
+    youtube_channels = load_youtube_channel_configs_from_env()
 
-    fetched_records, failed_feeds = fetch_all_feeds(feed_configs)
+    rss_records, failed_feeds = fetch_all_feeds(feed_configs)
+    youtube_records, failed_channels, missing_transcripts = fetch_all_channels(
+        youtube_channels,
+        api_key=settings.transcript_api_key,
+    )
 
     import psycopg
 
     with psycopg.connect(settings.postgres_dsn) as connection:
-        deduped = filter_existing_records(connection, fetched_records)
-        inserted = _insert_sources(connection, deduped.new_records)
+        deduped_rss = filter_existing_records(connection, rss_records)
+        deduped_youtube = filter_existing_youtube_records(connection, youtube_records)
+        inserted = _insert_sources(connection, [*deduped_rss.new_records, *deduped_youtube.new_records])
 
     elapsed = time.perf_counter() - start
     _log_event(
@@ -94,10 +107,14 @@ def run_ingestion(*, pipeline_run_id: str | None = None) -> str:
         stage="ingestion",
         event="complete",
         elapsed_s=elapsed,
-        fetched=len(fetched_records),
-        deduped=len(deduped.duplicate_records),
+        fetched_rss=len(rss_records),
+        fetched_youtube=len(youtube_records),
+        deduped_rss=len(deduped_rss.duplicate_records),
+        deduped_youtube=len(deduped_youtube.duplicate_records),
         inserted=inserted,
-        failed=failed_feeds,
+        failed_rss=failed_feeds,
+        failed_youtube=failed_channels,
+        missing_youtube_transcripts=missing_transcripts,
     )
     return pipeline_run_id
 

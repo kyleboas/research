@@ -1,0 +1,286 @@
+"""YouTube ingestion via transcript provider APIs."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+import json
+import logging
+import os
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+LOGGER = logging.getLogger("research.ingestion.youtube")
+
+
+@dataclass(frozen=True)
+class YouTubeChannelConfig:
+    """Configuration for polling a channel's latest videos."""
+
+    name: str
+    channel_id: str
+    latest_limit: int = 5
+    timeout_s: float = 12.0
+
+
+@dataclass(frozen=True)
+class YouTubeRecord:
+    """Normalized YouTube record persisted in `sources`."""
+
+    source_type: str
+    source_key: str
+    title: str
+    url: str
+    published_at: datetime | None
+    content: str
+    feed_name: str
+    guid: str
+    channel_id: str
+    video_id: str
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+
+    normalized = value.strip()
+    if not normalized:
+        return None
+
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _stable_source_key(*, channel_id: str, video_id: str, title: str, published_at: datetime | None) -> str:
+    if channel_id and video_id:
+        return f"youtube:{channel_id}:{video_id}"
+
+    digest = hashlib.sha256(
+        f"{channel_id}|{video_id}|{title}|{published_at.isoformat() if published_at else ''}".encode("utf-8")
+    ).hexdigest()
+    return f"youtube:sha256:{digest}"
+
+
+def _build_headers(api_key: str) -> dict[str, str]:
+    return {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "X-API-Key": api_key,
+    }
+
+
+def _http_json(*, base_url: str, path: str, query: dict[str, str | int], api_key: str, timeout_s: float) -> dict[str, object]:
+    encoded_query = urlencode([(key, str(value)) for key, value in query.items() if value != ""])
+    url = f"{base_url.rstrip('/')}{path}"
+    if encoded_query:
+        url = f"{url}?{encoded_query}"
+
+    request = Request(url, headers=_build_headers(api_key), method="GET")
+    try:
+        with urlopen(request, timeout=timeout_s) as response:
+            payload = response.read()
+    except (HTTPError, URLError, TimeoutError) as exc:
+        raise RuntimeError(f"request failed: {exc}") from exc
+
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("invalid JSON response") from exc
+
+    if not isinstance(decoded, dict):
+        raise RuntimeError("unexpected JSON response shape")
+    return decoded
+
+
+def _extract_items(payload: dict[str, object]) -> list[dict[str, object]]:
+    for key in ("videos", "items", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _extract_text(payload: dict[str, object]) -> str:
+    for key in ("transcript", "text", "content"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            chunks = [piece.get("text", "") for piece in value if isinstance(piece, dict)]
+            return " ".join(part.strip() for part in chunks if part).strip()
+    return ""
+
+
+def load_youtube_channel_configs_from_env() -> list[YouTubeChannelConfig]:
+    """Load channel poll configuration from `YOUTUBE_CHANNELS` env var (`name|channel_id`)."""
+
+    raw = os.getenv("YOUTUBE_CHANNELS", "")
+    latest_limit = int(os.getenv("YOUTUBE_LATEST_LIMIT", "5"))
+    timeout_s = float(os.getenv("YOUTUBE_TIMEOUT_S", "12"))
+
+    configs: list[YouTubeChannelConfig] = []
+    for chunk in [piece.strip() for piece in raw.split(",") if piece.strip()]:
+        if "|" in chunk:
+            name, channel_id = [part.strip() for part in chunk.split("|", maxsplit=1)]
+        else:
+            channel_id = chunk
+            name = chunk
+
+        if not channel_id:
+            continue
+
+        configs.append(
+            YouTubeChannelConfig(
+                name=name or channel_id,
+                channel_id=channel_id,
+                latest_limit=max(latest_limit, 1),
+                timeout_s=max(timeout_s, 1.0),
+            )
+        )
+
+    return sorted(configs, key=lambda config: (config.name, config.channel_id))
+
+
+def _to_record(video: dict[str, object], *, channel: YouTubeChannelConfig, transcript: str) -> YouTubeRecord:
+    video_id = str(video.get("video_id") or video.get("id") or "").strip()
+    title = str(video.get("title") or "").strip() or f"YouTube video {video_id}"
+    url = str(video.get("url") or video.get("video_url") or "").strip()
+    if not url and video_id:
+        url = f"https://www.youtube.com/watch?v={video_id}"
+
+    published_at = _parse_datetime(str(video.get("published_at") or video.get("publishedAt") or ""))
+
+    return YouTubeRecord(
+        source_type="youtube",
+        source_key=_stable_source_key(
+            channel_id=channel.channel_id,
+            video_id=video_id,
+            title=title,
+            published_at=published_at,
+        ),
+        title=title,
+        url=url,
+        published_at=published_at,
+        content=transcript,
+        feed_name=channel.name,
+        guid=video_id,
+        channel_id=channel.channel_id,
+        video_id=video_id,
+    )
+
+
+def fetch_channel_latest_videos(
+    channel: YouTubeChannelConfig,
+    *,
+    api_key: str,
+    provider_base_url: str,
+) -> list[dict[str, object]]:
+    """Fetch latest videos for a configured YouTube channel."""
+
+    payload = _http_json(
+        base_url=provider_base_url,
+        path="/youtube/channel/latest",
+        query={"channel_id": channel.channel_id, "limit": channel.latest_limit},
+        api_key=api_key,
+        timeout_s=channel.timeout_s,
+    )
+    return _extract_items(payload)
+
+
+def fetch_video_transcript(
+    *,
+    video_id: str,
+    api_key: str,
+    provider_base_url: str,
+    timeout_s: float,
+) -> str:
+    """Fetch transcript text for a single YouTube video."""
+
+    payload = _http_json(
+        base_url=provider_base_url,
+        path="/youtube/transcript/search",
+        query={"video_id": video_id},
+        api_key=api_key,
+        timeout_s=timeout_s,
+    )
+    return _extract_text(payload)
+
+
+def poll_channel_videos(
+    channel: YouTubeChannelConfig,
+    *,
+    api_key: str,
+    provider_base_url: str,
+) -> tuple[list[YouTubeRecord], int, Exception | None]:
+    """Poll latest videos and fetch transcripts; returns records + missing transcript count."""
+
+    try:
+        videos = fetch_channel_latest_videos(channel, api_key=api_key, provider_base_url=provider_base_url)
+    except Exception as exc:  # pragma: no cover - defensive path
+        LOGGER.warning("Failed YouTube channel '%s': %s", channel.name, exc)
+        return [], 0, exc
+
+    records: list[YouTubeRecord] = []
+    missing_transcripts = 0
+
+    for video in videos:
+        video_id = str(video.get("video_id") or video.get("id") or "").strip()
+        if not video_id:
+            continue
+
+        transcript = ""
+        try:
+            transcript = fetch_video_transcript(
+                video_id=video_id,
+                api_key=api_key,
+                provider_base_url=provider_base_url,
+                timeout_s=channel.timeout_s,
+            )
+        except Exception as exc:  # pragma: no cover - defensive path
+            LOGGER.info("Transcript unavailable for video '%s' (%s): %s", video_id, channel.name, exc)
+
+        if not transcript:
+            missing_transcripts += 1
+
+        records.append(_to_record(video, channel=channel, transcript=transcript))
+
+    return sorted(records, key=lambda record: (record.channel_id, record.video_id, record.title)), missing_transcripts, None
+
+
+def fetch_all_channels(
+    channel_configs: Iterable[YouTubeChannelConfig],
+    *,
+    api_key: str,
+    provider_base_url: str | None = None,
+) -> tuple[list[YouTubeRecord], int, int]:
+    """Poll all configured channels and return records + failed channels + missing transcripts."""
+
+    base_url = provider_base_url or os.getenv("TRANSCRIPT_API_BASE_URL", "https://api.transcriptapi.com")
+
+    records: list[YouTubeRecord] = []
+    failed_channels = 0
+    missing_transcripts = 0
+
+    for channel in channel_configs:
+        channel_records, channel_missing, error = poll_channel_videos(
+            channel,
+            api_key=api_key,
+            provider_base_url=base_url,
+        )
+        failed_channels += int(error is not None)
+        missing_transcripts += channel_missing
+        records.extend(channel_records)
+
+    return sorted(records, key=lambda record: (record.channel_id, record.video_id, record.title)), failed_channels, missing_transcripts
