@@ -8,11 +8,9 @@ on:
       from_stage:
         description: "Stage to start from"
         required: true
-        default: ingestion
+        default: generation
         type: choice
         options:
-          - ingestion
-          - embedding
           - generation
           - verification
           - delivery
@@ -26,8 +24,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       pipeline_run_id: ${{ steps.init.outputs.pipeline_run_id }}
-      run_ingestion: ${{ steps.init.outputs.run_ingestion }}
-      run_embedding: ${{ steps.init.outputs.run_embedding }}
       run_generation: ${{ steps.init.outputs.run_generation }}
       run_verification: ${{ steps.init.outputs.run_verification }}
       run_delivery: ${{ steps.init.outputs.run_delivery }}
@@ -44,31 +40,16 @@ jobs:
           fi
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            FROM_STAGE="ingestion"
+            FROM_STAGE="generation"
           else
             FROM_STAGE="${{ github.event.inputs.from_stage }}"
           fi
 
-          RUN_INGESTION=false
-          RUN_EMBEDDING=false
           RUN_GENERATION=false
           RUN_VERIFICATION=false
           RUN_DELIVERY=false
 
           case "$FROM_STAGE" in
-            ingestion)
-              RUN_INGESTION=true
-              RUN_EMBEDDING=true
-              RUN_GENERATION=true
-              RUN_VERIFICATION=true
-              RUN_DELIVERY=true
-              ;;
-            embedding)
-              RUN_EMBEDDING=true
-              RUN_GENERATION=true
-              RUN_VERIFICATION=true
-              RUN_DELIVERY=true
-              ;;
             generation)
               RUN_GENERATION=true
               RUN_VERIFICATION=true
@@ -89,85 +70,15 @@ jobs:
 
           {
             echo "pipeline_run_id=$RUN_ID"
-            echo "run_ingestion=$RUN_INGESTION"
-            echo "run_embedding=$RUN_EMBEDDING"
             echo "run_generation=$RUN_GENERATION"
             echo "run_verification=$RUN_VERIFICATION"
             echo "run_delivery=$RUN_DELIVERY"
           } >> "$GITHUB_OUTPUT"
 
-  ingestion:
-    runs-on: ubuntu-latest
-    needs: init
-    if: ${{ needs.init.outputs.run_ingestion == 'true' }}
-    env:
-      PIPELINE_RUN_ID: ${{ needs.init.outputs.pipeline_run_id }}
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      TRANSCRIPT_API_KEY: ${{ secrets.TRANSCRIPT_API_KEY }}
-      GITHUB_TOKEN: ${{ secrets.DELIVERY_GITHUB_TOKEN }}
-      GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
-      GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
-      RSS_FEEDS: ${{ secrets.RSS_FEEDS }}
-      YOUTUBE_CHANNELS: ${{ secrets.YOUTUBE_CHANNELS }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Run ingestion
-        run: |
-          mkdir -p logs
-          python -m src.pipeline --pipeline-run-id "$PIPELINE_RUN_ID" ingestion 2>&1 | tee logs/ingestion.log
-      - name: Upload ingestion logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ingestion-logs-${{ needs.init.outputs.pipeline_run_id }}
-          path: logs/ingestion.log
-
-  embedding:
-    runs-on: ubuntu-latest
-    needs: [init, ingestion]
-    if: ${{ needs.init.outputs.run_embedding == 'true' && (needs.init.outputs.run_ingestion != 'true' || needs.ingestion.result == 'success') }}
-    env:
-      PIPELINE_RUN_ID: ${{ needs.init.outputs.pipeline_run_id }}
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      TRANSCRIPT_API_KEY: ${{ secrets.TRANSCRIPT_API_KEY }}
-      GITHUB_TOKEN: ${{ secrets.DELIVERY_GITHUB_TOKEN }}
-      GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
-      GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Run embedding
-        run: |
-          mkdir -p logs
-          python -m src.pipeline --pipeline-run-id "$PIPELINE_RUN_ID" embedding 2>&1 | tee logs/embedding.log
-      - name: Upload embedding logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: embedding-logs-${{ needs.init.outputs.pipeline_run_id }}
-          path: logs/embedding.log
-
   generation:
     runs-on: ubuntu-latest
-    needs: [init, embedding]
-    if: ${{ needs.init.outputs.run_generation == 'true' && (needs.init.outputs.run_embedding != 'true' || needs.embedding.result == 'success') }}
+    needs: init
+    if: ${{ needs.init.outputs.run_generation == 'true' }}
     env:
       PIPELINE_RUN_ID: ${{ needs.init.outputs.pipeline_run_id }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

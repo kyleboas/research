@@ -1,0 +1,70 @@
+name: Daily Ingestion
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ingestion:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      TRANSCRIPT_API_KEY: ${{ secrets.TRANSCRIPT_API_KEY }}
+      GITHUB_TOKEN: ${{ secrets.DELIVERY_GITHUB_TOKEN }}
+      GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
+      GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
+      RSS_FEEDS: ${{ secrets.RSS_FEEDS }}
+      YOUTUBE_CHANNELS: ${{ secrets.YOUTUBE_CHANNELS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run ingestion
+        run: |
+          mkdir -p logs
+          python -m src.pipeline ingestion 2>&1 | tee logs/ingestion.log
+      - name: Upload ingestion logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ingestion-logs-${{ github.run_id }}
+          path: logs/ingestion.log
+
+  embedding:
+    runs-on: ubuntu-latest
+    needs: ingestion
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      TRANSCRIPT_API_KEY: ${{ secrets.TRANSCRIPT_API_KEY }}
+      GITHUB_TOKEN: ${{ secrets.DELIVERY_GITHUB_TOKEN }}
+      GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
+      GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run embedding
+        run: |
+          mkdir -p logs
+          python -m src.pipeline embedding 2>&1 | tee logs/embedding.log
+      - name: Upload embedding logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: embedding-logs-${{ github.run_id }}
+          path: logs/embedding.log
