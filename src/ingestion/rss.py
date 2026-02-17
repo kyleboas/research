@@ -28,6 +28,7 @@ class FeedConfig:
     timeout_s: float = 10.0
     retries: int = 2
     backoff_base_s: float = 0.5
+    latest_limit: int = 10
 
 
 @dataclass(frozen=True)
@@ -146,7 +147,7 @@ def _parse_rss_items(root: ET.Element, feed_name: str) -> list[RSSRecord]:
     return records
 
 
-def parse_feed(content: bytes, *, feed_name: str) -> list[RSSRecord]:
+def parse_feed(content: bytes, *, feed_name: str, latest_limit: int = 10) -> list[RSSRecord]:
     """Parse a feed payload into normalized deterministic records."""
 
     root = ET.fromstring(content)
@@ -157,7 +158,7 @@ def parse_feed(content: bytes, *, feed_name: str) -> list[RSSRecord]:
     else:
         records = _parse_rss_items(root, feed_name)
 
-    return sorted(records, key=lambda record: (record.source_key, record.url, record.title))
+    return sorted(records[:latest_limit], key=lambda record: (record.source_key, record.url, record.title))
 
 
 def fetch_feed(config: FeedConfig) -> tuple[list[RSSRecord], Exception | None]:
@@ -165,7 +166,7 @@ def fetch_feed(config: FeedConfig) -> tuple[list[RSSRecord], Exception | None]:
 
     try:
         payload = _fetch_feed_document(config)
-        return parse_feed(payload, feed_name=config.name), None
+        return parse_feed(payload, feed_name=config.name, latest_limit=config.latest_limit), None
     except Exception as exc:  # pragma: no cover - defensive logging path
         LOGGER.warning("Failed feed '%s': %s", config.name, exc)
         return [], exc
@@ -193,6 +194,7 @@ def load_feed_configs_from_env() -> list[FeedConfig]:
     timeout = float(os.getenv("RSS_FEED_TIMEOUT_S", "10"))
     retries = int(os.getenv("RSS_FEED_RETRIES", "2"))
     backoff = float(os.getenv("RSS_FEED_BACKOFF_BASE_S", "0.5"))
+    latest_limit = int(os.getenv("RSS_LATEST_LIMIT", "10"))
 
     if not raw.strip():
         feeds_file = Path(os.getenv("RSS_FEEDS_FILE", Path(__file__).resolve().parents[2] / "feeds" / "rss.md"))
@@ -206,7 +208,7 @@ def load_feed_configs_from_env() -> list[FeedConfig]:
             url = chunk
             parsed = urlparse(url)
             name = parsed.netloc or url
-        configs.append(FeedConfig(name=name, url=url, timeout_s=timeout, retries=retries, backoff_base_s=backoff))
+        configs.append(FeedConfig(name=name, url=url, timeout_s=timeout, retries=retries, backoff_base_s=backoff, latest_limit=max(latest_limit, 1)))
 
     return sorted(configs, key=lambda config: (config.name, config.url))
 
