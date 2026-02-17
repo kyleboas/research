@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       from_stage:
-        description: "Stage to start from (manual fallback)"
+        description: "Stage to start from"
         required: true
         default: ingestion
         type: choice
@@ -102,12 +102,17 @@ jobs:
     if: ${{ needs.init.outputs.run_ingestion == 'true' }}
     env:
       PIPELINE_RUN_ID: ${{ needs.init.outputs.pipeline_run_id }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
       TRANSCRIPT_API_KEY: ${{ secrets.TRANSCRIPT_API_KEY }}
-      RSS_FEEDS_JSON: ${{ secrets.RSS_FEEDS_JSON }}
-      YOUTUBE_CHANNELS_JSON: ${{ secrets.YOUTUBE_CHANNELS_JSON }}
+      GITHUB_TOKEN: ${{ secrets.DELIVERY_GITHUB_TOKEN }}
+      GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
+      GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
+      RSS_FEEDS: ${{ secrets.RSS_FEEDS }}
+      YOUTUBE_CHANNELS: ${{ secrets.YOUTUBE_CHANNELS }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -132,8 +137,15 @@ jobs:
     if: ${{ needs.init.outputs.run_embedding == 'true' && (needs.init.outputs.run_ingestion != 'true' || needs.ingestion.result == 'success') }}
     env:
       PIPELINE_RUN_ID: ${{ needs.init.outputs.pipeline_run_id }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      TRANSCRIPT_API_KEY: ${{ secrets.TRANSCRIPT_API_KEY }}
+      GITHUB_TOKEN: ${{ secrets.DELIVERY_GITHUB_TOKEN }}
+      GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
+      GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -144,7 +156,7 @@ jobs:
       - name: Run embedding
         run: |
           mkdir -p logs
-          python -m src.pipeline --pipeline-run-id "$PIPELINE_RUN_ID" embedding --chunk-window-size 200 --chunk-overlap 40 --embedding-batch-size 64 2>&1 | tee logs/embedding.log
+          python -m src.pipeline --pipeline-run-id "$PIPELINE_RUN_ID" embedding 2>&1 | tee logs/embedding.log
       - name: Upload embedding logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -158,9 +170,15 @@ jobs:
     if: ${{ needs.init.outputs.run_generation == 'true' && (needs.init.outputs.run_embedding != 'true' || needs.embedding.result == 'success') }}
     env:
       PIPELINE_RUN_ID: ${{ needs.init.outputs.pipeline_run_id }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OPENAI_CHAT_MODEL: ${{ secrets.OPENAI_CHAT_MODEL }}
+      TRANSCRIPT_API_KEY: ${{ secrets.TRANSCRIPT_API_KEY }}
+      GITHUB_TOKEN: ${{ secrets.DELIVERY_GITHUB_TOKEN }}
+      GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
+      GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
       REPORT_TOPIC: ${{ secrets.REPORT_TOPIC }}
     steps:
       - uses: actions/checkout@v4
@@ -172,7 +190,7 @@ jobs:
       - name: Run generation
         run: |
           mkdir -p logs artifacts
-          python -m src.pipeline --pipeline-run-id "$PIPELINE_RUN_ID" generation --topic "$REPORT_TOPIC" --artifacts-dir artifacts/reports 2>&1 | tee logs/generation.log
+          python -m src.pipeline --pipeline-run-id "$PIPELINE_RUN_ID" generation --artifacts-dir artifacts/reports 2>&1 | tee logs/generation.log
       - name: Upload generation logs and artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -188,9 +206,15 @@ jobs:
     if: ${{ needs.init.outputs.run_verification == 'true' && (needs.init.outputs.run_generation != 'true' || needs.generation.result == 'success') }}
     env:
       PIPELINE_RUN_ID: ${{ needs.init.outputs.pipeline_run_id }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OPENAI_CHAT_MODEL: ${{ secrets.OPENAI_CHAT_MODEL }}
+      TRANSCRIPT_API_KEY: ${{ secrets.TRANSCRIPT_API_KEY }}
+      GITHUB_TOKEN: ${{ secrets.DELIVERY_GITHUB_TOKEN }}
+      GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
+      GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -215,11 +239,15 @@ jobs:
     if: ${{ needs.init.outputs.run_delivery == 'true' && (needs.init.outputs.run_verification != 'true' || needs.verification.result == 'success') }}
     env:
       PIPELINE_RUN_ID: ${{ needs.init.outputs.pipeline_run_id }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      TRANSCRIPT_API_KEY: ${{ secrets.TRANSCRIPT_API_KEY }}
       GITHUB_TOKEN: ${{ secrets.DELIVERY_GITHUB_TOKEN }}
       GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
       GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
-      GITHUB_DEFAULT_BRANCH: ${{ secrets.GITHUB_DEFAULT_BRANCH }}
       DELIVERY_EMAIL_ENABLED: ${{ secrets.DELIVERY_EMAIL_ENABLED }}
       DELIVERY_EMAIL_API_KEY: ${{ secrets.DELIVERY_EMAIL_API_KEY }}
       DELIVERY_EMAIL_FROM: ${{ secrets.DELIVERY_EMAIL_FROM }}
