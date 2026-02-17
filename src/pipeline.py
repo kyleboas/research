@@ -33,6 +33,155 @@ if not LOGGER.handlers:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
+EMBEDDING_COST_PER_MILLION_TOKENS_USD = float(os.getenv("EMBEDDING_COST_PER_MILLION_TOKENS_USD", "0.02"))
+SONNET_INPUT_COST_PER_MILLION_TOKENS_USD = float(os.getenv("SONNET_INPUT_COST_PER_MILLION_TOKENS_USD", "3.0"))
+SONNET_OUTPUT_COST_PER_MILLION_TOKENS_USD = float(os.getenv("SONNET_OUTPUT_COST_PER_MILLION_TOKENS_USD", "15.0"))
+OPUS_COST_MULTIPLIER = float(os.getenv("OPUS_COST_MULTIPLIER", "5"))
+
+
+def _estimate_tokens_from_text(text: str) -> int:
+    normalized = text.strip()
+    if normalized == "":
+        return 0
+    return max(1, round(len(normalized) / 4))
+
+
+def _resolve_generation_model_tier(model_name: str) -> str:
+    return "opus" if "opus" in model_name.lower() else "sonnet"
+
+
+def _estimate_generation_step_cost(*, input_tokens: int, output_tokens: int, model_tier: str) -> float:
+    multiplier = OPUS_COST_MULTIPLIER if model_tier == "opus" else 1.0
+    input_cost = (input_tokens / 1_000_000) * SONNET_INPUT_COST_PER_MILLION_TOKENS_USD
+    output_cost = (output_tokens / 1_000_000) * SONNET_OUTPUT_COST_PER_MILLION_TOKENS_USD
+    return round((input_cost + output_cost) * multiplier, 6)
+
+
+def _persist_stage_cost_metrics(
+    connection: object,
+    *,
+    pipeline_run_id: str,
+    stage: str,
+    metrics: dict[str, object],
+) -> None:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'pipeline_runs'
+                  AND column_name = 'cost_estimate_json'
+            )
+            """
+        )
+        has_cost_column = bool(cursor.fetchone()[0])
+
+        cursor.execute(
+            """
+            SELECT id, metadata, CASE WHEN %s THEN cost_estimate_json ELSE NULL END
+            FROM pipeline_runs
+            WHERE run_name = %s
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (has_cost_column, pipeline_run_id),
+        )
+        row = cursor.fetchone()
+        if row is not None and len(row) != 3:
+            return
+
+        if row is None:
+            if has_cost_column:
+                cursor.execute(
+                    """
+                    INSERT INTO pipeline_runs (run_name, status, metadata, cost_estimate_json)
+                    VALUES (%s, %s, %s::jsonb, %s::jsonb)
+                    RETURNING id
+                    """,
+                    (pipeline_run_id, "running", json.dumps({"pipeline_run_id": pipeline_run_id}), json.dumps({})),
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO pipeline_runs (run_name, status, metadata)
+                    VALUES (%s, %s, %s::jsonb)
+                    RETURNING id
+                    """,
+                    (pipeline_run_id, "running", json.dumps({"pipeline_run_id": pipeline_run_id})),
+                )
+            run_id = cursor.fetchone()[0]
+            existing_metadata: dict[str, object] = {"pipeline_run_id": pipeline_run_id}
+            existing_cost: dict[str, object] = {}
+        else:
+            run_id, existing_metadata, existing_cost = row
+            if not isinstance(existing_metadata, dict):
+                existing_metadata = {}
+            if not isinstance(existing_cost, dict):
+                existing_cost = {}
+
+        stages = existing_cost.get("stages", {}) if isinstance(existing_cost, dict) else {}
+        if not isinstance(stages, dict):
+            stages = {}
+        stages[stage] = metrics
+
+        total_tokens = 0
+        total_cost = 0.0
+        for stage_metrics in stages.values():
+            if not isinstance(stage_metrics, dict):
+                continue
+            token_count = stage_metrics.get("token_count", 0)
+            estimated_cost = stage_metrics.get("estimated_cost_usd", 0.0)
+            if isinstance(token_count, (int, float)):
+                total_tokens += int(token_count)
+            if isinstance(estimated_cost, (int, float)):
+                total_cost += float(estimated_cost)
+
+        updated_cost = {
+            "stages": stages,
+            "total_token_count": total_tokens,
+            "total_estimated_cost_usd": round(total_cost, 6),
+            "updated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        }
+
+        if has_cost_column:
+            cursor.execute(
+                """
+                UPDATE pipeline_runs
+                SET cost_estimate_json = %s::jsonb,
+                    metadata = %s::jsonb,
+                    status = %s,
+                    finished_at = CASE WHEN %s = 'delivery' THEN NOW() ELSE finished_at END
+                WHERE id = %s
+                """,
+                (
+                    json.dumps(updated_cost),
+                    json.dumps({**existing_metadata, "pipeline_run_id": pipeline_run_id}),
+                    "completed" if stage == "delivery" else "running",
+                    stage,
+                    run_id,
+                ),
+            )
+            return
+
+        cursor.execute(
+            """
+            UPDATE pipeline_runs
+            SET metadata = %s::jsonb,
+                status = %s,
+                finished_at = CASE WHEN %s = 'delivery' THEN NOW() ELSE finished_at END
+            WHERE id = %s
+            """,
+            (
+                json.dumps({**existing_metadata, "pipeline_run_id": pipeline_run_id, "cost_estimate_json": updated_cost}),
+                "completed" if stage == "delivery" else "running",
+                stage,
+                run_id,
+            ),
+        )
+
+
 def _log_event(*, pipeline_run_id: str, stage: str, event: str, elapsed_s: float | None = None, **extra: object) -> None:
     payload: dict[str, object] = {
         "pipeline_run_id": pipeline_run_id,
@@ -116,6 +265,17 @@ def run_ingestion(*, pipeline_run_id: str | None = None) -> str:
         deduped_rss = filter_existing_records(connection, rss_records)
         deduped_youtube = filter_existing_youtube_records(connection, youtube_records)
         inserted = _insert_sources(connection, [*deduped_rss.new_records, *deduped_youtube.new_records])
+        _persist_stage_cost_metrics(
+            connection,
+            pipeline_run_id=pipeline_run_id,
+            stage="ingestion",
+            metrics={
+                "token_count": 0,
+                "estimated_cost_usd": 0.0,
+                "notes": "Network/data fetch stage; no model token billing.",
+            },
+        )
+        connection.commit()
 
     elapsed = time.perf_counter() - start
     _log_event(
@@ -259,7 +419,7 @@ def run_embedding(
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT c.id, c.content
+                SELECT c.id, c.content, c.token_count
                 FROM chunks AS c
                 LEFT JOIN embeddings AS e
                     ON e.chunk_id = c.id
@@ -272,14 +432,28 @@ def run_embedding(
             )
             chunks_to_embed = cursor.fetchall()
 
+        embedding_token_count = 0
         if chunks_to_embed:
+            embedding_token_count = sum((token_count or _estimate_tokens_from_text(content)) for _, content, token_count in chunks_to_embed)
             embedded_rows = embed_chunks(
-                chunks=chunks_to_embed,
+                chunks=[(chunk_id, content) for chunk_id, content, _ in chunks_to_embed],
                 settings=settings,
                 model=embedding_model_override,
                 batch_size=embedding_batch_size,
             )
             embeddings_upserted = upsert_embeddings(connection, embedded_rows)
+
+        _persist_stage_cost_metrics(
+            connection,
+            pipeline_run_id=pipeline_run_id,
+            stage="embedding",
+            metrics={
+                "token_count": embedding_token_count,
+                "estimated_cost_usd": round((embedding_token_count / 1_000_000) * EMBEDDING_COST_PER_MILLION_TOKENS_USD, 6),
+                "model": embedding_model_override or settings.openai_embedding_model,
+                "cost_per_million_tokens_usd": EMBEDDING_COST_PER_MILLION_TOKENS_USD,
+            },
+        )
 
         connection.commit()
 
@@ -293,6 +467,7 @@ def run_embedding(
         chunks_created=chunks_created,
         chunks_updated=chunks_updated,
         embeddings_upserted=embeddings_upserted,
+        embeddings_token_count=embedding_token_count,
         embedding_model=embedding_model_override or settings.openai_embedding_model,
     )
 
@@ -399,6 +574,43 @@ def run_generation(
                     }),
                 ),
             )
+
+        generation_model_tier = _resolve_generation_model_tier(settings.anthropic_model_id)
+        research_input_tokens = sum(_estimate_tokens_from_text(chunk.text) for chunk in context_packet.chunks)
+        draft_input_tokens = _estimate_tokens_from_text(context_packet.to_json()) + _estimate_tokens_from_text(topic)
+        draft_output_tokens = _estimate_tokens_from_text(draft_markdown)
+        critique_input_tokens = draft_input_tokens + draft_output_tokens
+        critique_output_tokens = _estimate_tokens_from_text(critique_markdown)
+        revision_input_tokens = critique_input_tokens + critique_output_tokens
+        revision_output_tokens = _estimate_tokens_from_text(final_markdown)
+
+        generation_token_count = (
+            research_input_tokens
+            + draft_input_tokens
+            + draft_output_tokens
+            + critique_input_tokens
+            + critique_output_tokens
+            + revision_input_tokens
+            + revision_output_tokens
+        )
+        generation_estimated_cost_usd = round(
+            _estimate_generation_step_cost(input_tokens=research_input_tokens, output_tokens=0, model_tier=generation_model_tier)
+            + _estimate_generation_step_cost(input_tokens=draft_input_tokens, output_tokens=draft_output_tokens, model_tier=generation_model_tier)
+            + _estimate_generation_step_cost(input_tokens=critique_input_tokens, output_tokens=critique_output_tokens, model_tier=generation_model_tier)
+            + _estimate_generation_step_cost(input_tokens=revision_input_tokens, output_tokens=revision_output_tokens, model_tier=generation_model_tier),
+            6,
+        )
+        _persist_stage_cost_metrics(
+            connection,
+            pipeline_run_id=pipeline_run_id,
+            stage="generation",
+            metrics={
+                "token_count": generation_token_count,
+                "estimated_cost_usd": generation_estimated_cost_usd,
+                "model": settings.anthropic_model_id,
+                "model_tier": generation_model_tier,
+            },
+        )
         connection.commit()
 
     elapsed = time.perf_counter() - start
@@ -408,6 +620,8 @@ def run_generation(
         event="complete",
         elapsed_s=elapsed,
         **stage_metrics,
+        generation_token_count=generation_token_count,
+        generation_estimated_cost_usd=generation_estimated_cost_usd,
         draft_artifact=str(draft_path),
         final_artifact=str(final_path),
     )
@@ -537,6 +751,20 @@ def run_verification(*, pipeline_run_id: str | None = None) -> str:
                 ),
             )
 
+        verification_token_count = _estimate_tokens_from_text(report_markdown) + sum(
+            _estimate_tokens_from_text(chunk_text) for chunk_text in chunk_text_by_id.values()
+        )
+        _persist_stage_cost_metrics(
+            connection,
+            pipeline_run_id=pipeline_run_id,
+            stage="verification",
+            metrics={
+                "token_count": verification_token_count,
+                "estimated_cost_usd": 0.0,
+                "notes": "Rule-based verification currently has no external model billing.",
+            },
+        )
+
         connection.commit()
 
     elapsed = time.perf_counter() - start
@@ -619,6 +847,19 @@ def run_delivery(*, pipeline_run_id: str | None = None, dry_run: bool | None = N
                 report_row = cursor.fetchone()
 
     if report_row is None:
+        with psycopg.connect(postgres_dsn) as connection:
+            _persist_stage_cost_metrics(
+                connection,
+                pipeline_run_id=pipeline_run_id,
+                stage="delivery",
+                metrics={
+                    "token_count": 0,
+                    "estimated_cost_usd": 0.0,
+                    "report_found": False,
+                },
+            )
+            connection.commit()
+
         elapsed = time.perf_counter() - start
         _log_event(
             pipeline_run_id=pipeline_run_id,
@@ -671,6 +912,20 @@ def run_delivery(*, pipeline_run_id: str | None = None, dry_run: bool | None = N
     if slack_enabled:
         slack_result = post_report_summary(summary=summary, report_url=github_result.html_url, dry_run=dry_run)
         slack_sent = slack_result.delivered
+
+    with psycopg.connect(postgres_dsn) as connection:
+        _persist_stage_cost_metrics(
+            connection,
+            pipeline_run_id=pipeline_run_id,
+            stage="delivery",
+            metrics={
+                "token_count": 0,
+                "estimated_cost_usd": 0.0,
+                "report_found": True,
+                "dry_run": dry_run,
+            },
+        )
+        connection.commit()
 
     elapsed = time.perf_counter() - start
     _log_event(
