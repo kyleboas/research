@@ -8,6 +8,8 @@ from email.utils import parsedate_to_datetime
 import hashlib
 import logging
 import os
+from pathlib import Path
+import re
 import time
 from typing import Iterable
 from urllib.parse import urlparse
@@ -182,12 +184,19 @@ def fetch_all_feeds(feed_configs: Iterable[FeedConfig]) -> tuple[list[RSSRecord]
 
 
 def load_feed_configs_from_env() -> list[FeedConfig]:
-    """Load feed configs from RSS_FEEDS env var (`name|url` comma-separated)."""
+    """Load feed configs from markdown (`feeds/rss.md`) or RSS_FEEDS env var.
+
+    If ``RSS_FEEDS`` is present, that value takes precedence for backwards compatibility.
+    """
 
     raw = os.getenv("RSS_FEEDS", "")
     timeout = float(os.getenv("RSS_FEED_TIMEOUT_S", "10"))
     retries = int(os.getenv("RSS_FEED_RETRIES", "2"))
     backoff = float(os.getenv("RSS_FEED_BACKOFF_BASE_S", "0.5"))
+
+    if not raw.strip():
+        feeds_file = Path(os.getenv("RSS_FEEDS_FILE", Path(__file__).resolve().parents[2] / "feeds" / "rss.md"))
+        raw = _load_feed_configs_csv_from_markdown(feeds_file)
 
     configs: list[FeedConfig] = []
     for chunk in [piece.strip() for piece in raw.split(",") if piece.strip()]:
@@ -200,3 +209,31 @@ def load_feed_configs_from_env() -> list[FeedConfig]:
         configs.append(FeedConfig(name=name, url=url, timeout_s=timeout, retries=retries, backoff_base_s=backoff))
 
     return sorted(configs, key=lambda config: (config.name, config.url))
+
+
+def _load_feed_configs_csv_from_markdown(path: Path) -> str:
+    """Convert feed entries from markdown into `name|url` CSV chunks."""
+
+    if not path.exists():
+        LOGGER.warning("RSS feeds markdown file not found: %s", path)
+        return ""
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    name_pattern = re.compile(r"^-\s+\*\*(.+?)\*\*\s*$")
+    feed_pattern = re.compile(r"^\s*-\s+Feed:\s*(\S+)\s*$")
+
+    current_name: str | None = None
+    chunks: list[str] = []
+
+    for line in lines:
+        name_match = name_pattern.match(line)
+        if name_match:
+            current_name = name_match.group(1).strip()
+            continue
+
+        feed_match = feed_pattern.match(line)
+        if feed_match and current_name:
+            chunks.append(f"{current_name}|{feed_match.group(1).strip()}")
+            current_name = None
+
+    return ",".join(chunks)

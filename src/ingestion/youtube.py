@@ -9,6 +9,8 @@ import hashlib
 import json
 import logging
 import os
+from pathlib import Path
+import re
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -124,11 +126,20 @@ def _extract_text(payload: dict[str, object]) -> str:
 
 
 def load_youtube_channel_configs_from_env() -> list[YouTubeChannelConfig]:
-    """Load channel poll configuration from `YOUTUBE_CHANNELS` env var (`name|channel_id`)."""
+    """Load channel poll configuration from markdown (`feeds/youtube.md`) or env.
+
+    If ``YOUTUBE_CHANNELS`` is present, that value takes precedence for backwards compatibility.
+    """
 
     raw = os.getenv("YOUTUBE_CHANNELS", "")
     latest_limit = int(os.getenv("YOUTUBE_LATEST_LIMIT", "5"))
     timeout_s = float(os.getenv("YOUTUBE_TIMEOUT_S", "12"))
+
+    if not raw.strip():
+        channels_file = Path(
+            os.getenv("YOUTUBE_CHANNELS_FILE", Path(__file__).resolve().parents[2] / "feeds" / "youtube.md")
+        )
+        raw = _load_channel_configs_csv_from_markdown(channels_file)
 
     configs: list[YouTubeChannelConfig] = []
     for chunk in [piece.strip() for piece in raw.split(",") if piece.strip()]:
@@ -151,6 +162,34 @@ def load_youtube_channel_configs_from_env() -> list[YouTubeChannelConfig]:
         )
 
     return sorted(configs, key=lambda config: (config.name, config.channel_id))
+
+
+def _load_channel_configs_csv_from_markdown(path: Path) -> str:
+    """Convert YouTube channel entries from markdown into `name|channel_id` CSV chunks."""
+
+    if not path.exists():
+        LOGGER.warning("YouTube channels markdown file not found: %s", path)
+        return ""
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    name_pattern = re.compile(r"^-\s+\*\*(.+?)\*\*\s*$")
+    channel_pattern = re.compile(r"^\s*-\s+Channel ID:\s*(\S+)\s*$")
+
+    current_name: str | None = None
+    chunks: list[str] = []
+
+    for line in lines:
+        name_match = name_pattern.match(line)
+        if name_match:
+            current_name = name_match.group(1).strip()
+            continue
+
+        channel_match = channel_pattern.match(line)
+        if channel_match and current_name:
+            chunks.append(f"{current_name}|{channel_match.group(1).strip()}")
+            current_name = None
+
+    return ",".join(chunks)
 
 
 def _to_record(video: dict[str, object], *, channel: YouTubeChannelConfig, transcript: str) -> YouTubeRecord:
