@@ -1,174 +1,79 @@
-# Setup Guide (iPhone-Only)
+# Setup Guide
 
-This guide is for running the project when your **only device is an iPhone**.
-
-Because this repository is a Python pipeline with Postgres, the practical iPhone approach is to use a **cloud dev environment** (GitHub Codespaces) plus managed services (like Supabase) and do everything from Safari.
+No terminal required. Everything is done through web UIs.
 
 ---
 
 ## What you need
 
-- A GitHub account.
-- Access to this repository on GitHub.
-- API keys/accounts for:
-  - Anthropic
-  - OpenAI
-  - Transcript provider
-  - Supabase (or another Postgres host)
+- A GitHub account with access to this repository
+- A Supabase project (free tier works)
+- API keys for: Anthropic, OpenAI, and your transcript provider
 
 ---
 
-## 1) Open a development environment from iPhone
+## 1) Set up the database (Supabase SQL Editor)
 
-1. Open Safari on iPhone and go to your repository on GitHub.
-2. Tap **Code** → **Codespaces** → **Create codespace on main** (or your working branch).
-3. Wait for the codespace terminal/editor to load.
+Open your Supabase project → **SQL Editor**, then run each file in order:
 
-> If Codespaces is unavailable on your plan, use any browser-based Linux shell service and run the same commands below.
+1. Copy and paste the contents of `sql/001_init.sql` → **Run**
+2. Copy and paste the contents of `sql/002_vector_indexes.sql` → **Run**
+3. Copy and paste the contents of `sql/003_hybrid_search.sql` → **Run**
 
----
-
-## 2) Install dependencies in the codespace terminal
-
-Run:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install anthropic openai "psycopg[binary]" pytest
-```
+Then copy your **Postgres connection string** from Supabase: **Project Settings → Database → Connection string (URI mode)**.
 
 ---
 
-## 3) Provision Postgres (Supabase recommended on iPhone)
+## 2) Add GitHub Actions secrets
 
-1. In Safari, open Supabase and create/select your project.
-2. Copy the Postgres connection string.
-3. In your codespace terminal, set:
+Go to your repository on GitHub → **Settings → Secrets and variables → Actions → New repository secret**.
 
-```bash
-export POSTGRES_DSN="postgresql://<user>:<password>@<host>:<port>/<db>"
-```
+Add each of the following:
 
-4. Run DB SQL setup:
+**Required:**
 
-```bash
-psql "$POSTGRES_DSN" -f sql/001_init.sql
-psql "$POSTGRES_DSN" -f sql/002_vector_indexes.sql
-psql "$POSTGRES_DSN" -f sql/003_hybrid_search.sql
-```
+| Secret | Value |
+|---|---|
+| `SUPABASE_URL` | `https://<project>.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY` | From Supabase → Project Settings → API |
+| `POSTGRES_DSN` | Connection string from step 1 |
+| `ANTHROPIC_API_KEY` | Your Anthropic API key |
+| `OPENAI_API_KEY` | Your OpenAI API key |
+| `TRANSCRIPT_API_KEY` | Your transcript provider key |
+| `DELIVERY_GITHUB_TOKEN` | A GitHub personal access token with repo write access |
+| `GITHUB_OWNER` | Your GitHub username or org name |
+| `GITHUB_REPO` | This repository name |
+| `RSS_FEEDS` | e.g. `OpenAI Blog\|https://openai.com/blog/rss.xml,Anthropic News\|https://www.anthropic.com/news/rss.xml` |
+| `YOUTUBE_CHANNELS` | e.g. `OpenAI\|UCXZCJLdBC09xxGZ6gcdrc6A` |
+| `REPORT_TOPIC` | e.g. `Weekly AI research roundup` |
 
----
+**Optional delivery:**
 
-## 4) Set required environment variables
-
-In the codespace terminal, export all required variables:
-
-```bash
-export SUPABASE_URL="https://<project>.supabase.co"
-export SUPABASE_SERVICE_ROLE_KEY="<supabase-service-role-key>"
-export POSTGRES_DSN="postgresql://<user>:<password>@<host>:<port>/<db>"
-
-export ANTHROPIC_API_KEY="<anthropic-key>"
-export ANTHROPIC_MODEL_ID="claude-3-5-sonnet-latest"
-export ANTHROPIC_SMALL_MODEL_ID="claude-3-5-haiku-latest"
-
-export OPENAI_API_KEY="<openai-key>"
-export OPENAI_EMBEDDING_MODEL="text-embedding-3-large"
-
-export TRANSCRIPT_API_KEY="<transcript-provider-key>"
-
-export GITHUB_TOKEN="<github-token>"
-export GITHUB_OWNER="<github-owner-or-username>"
-export GITHUB_REPO="<repo-name>"
-export GITHUB_DEFAULT_BRANCH="main"
-```
-
-Set ingestion sources:
-
-```bash
-export RSS_FEEDS="OpenAI Blog|https://openai.com/blog/rss.xml,Anthropic News|https://www.anthropic.com/news/rss.xml"
-export YOUTUBE_CHANNELS="OpenAI|UCXZCJLdBC09xxGZ6gcdrc6A"
-```
-
-Optional runtime tuning:
-
-```bash
-export RSS_FEED_TIMEOUT_S="10"
-export RSS_FEED_RETRIES="2"
-export RSS_FEED_BACKOFF_BASE_S="0.5"
-export YOUTUBE_LATEST_LIMIT="5"
-export YOUTUBE_TIMEOUT_S="12"
-export CHUNK_WINDOW_SIZE="200"
-export CHUNK_OVERLAP="40"
-export EMBEDDING_BATCH_SIZE="64"
-```
+| Secret | Value |
+|---|---|
+| `DELIVERY_EMAIL_ENABLED` | `true` or `false` |
+| `DELIVERY_EMAIL_API_KEY` | Email provider API key |
+| `DELIVERY_EMAIL_FROM` | Sender address |
+| `DELIVERY_EMAIL_TO` | Recipient address |
+| `DELIVERY_SLACK_ENABLED` | `true` or `false` |
+| `DELIVERY_SLACK_WEBHOOK_URL` | Slack incoming webhook URL |
 
 ---
 
-## 5) Verify setup
+## 3) Run the pipeline
 
-```bash
-pytest -q
-```
+Go to your repository → **Actions → Weekly Report Pipeline → Run workflow**.
 
----
+Choose a starting stage (default: `ingestion` runs everything) and tap **Run workflow**.
 
-## 6) Run the pipeline stage-by-stage
-
-Create one run ID:
-
-```bash
-RUN_ID="$(python - <<'PY'
-import uuid
-print(uuid.uuid4())
-PY
-)"
-```
-
-Run each stage:
-
-```bash
-python -m src.pipeline ingestion --pipeline-run-id "$RUN_ID"
-python -m src.pipeline embedding --pipeline-run-id "$RUN_ID"
-python -m src.pipeline generation --pipeline-run-id "$RUN_ID"
-python -m src.pipeline verification --pipeline-run-id "$RUN_ID"
-python -m src.pipeline delivery --pipeline-run-id "$RUN_ID" --dry-run
-```
-
-Artifacts are written to:
-
-```text
-artifacts/reports/<pipeline_run_id>/
-```
+The pipeline runs automatically every Monday at noon UTC. You can also trigger it manually any time from the Actions tab.
 
 ---
 
-## 7) Optional: one-command run
+## Troubleshooting
 
-```bash
-python -m src.pipeline all --pipeline-run-id "$RUN_ID"
-```
-
-Use `--dry-run` on delivery paths while validating credentials and permissions.
-
----
-
-## 8) iPhone-specific tips
-
-- In Safari, long-press in terminal to paste API keys.
-- Keep a secure password manager open for key copy/paste.
-- If terminal sessions reset, re-run `source .venv/bin/activate` and re-export env vars.
-- For persistent env vars in Codespaces, use GitHub Codespaces Secrets instead of manual exports.
-- Use `--dry-run` first before enabling real delivery actions.
-
----
-
-## 9) Troubleshooting
-
-- **`Missing required environment variable`**: one or more required `export` commands were missed.
-- **`psql: command not found`**: install PostgreSQL client in your cloud dev environment.
-- **Database extension/index errors**: verify DB user permissions to create required extensions.
-- **No ingestion records**: check `RSS_FEEDS` and `YOUTUBE_CHANNELS` formatting.
-- **Delivery errors**: validate GitHub token/repo/branch env vars and retry with `--dry-run` first.
+- **Job fails on a specific stage**: Click the failed job in Actions to see the logs. Each stage uploads a log file as an artifact.
+- **`Missing required environment variable`**: A secret is missing or misspelled in step 2.
+- **Database errors**: Verify the SQL files ran without errors in the Supabase SQL Editor and that `POSTGRES_DSN` is correct.
+- **No ingestion records**: Check the formatting of `RSS_FEEDS` and `YOUTUBE_CHANNELS` — use `Name|url` pairs separated by commas.
+- **Delivery not publishing**: Confirm `DELIVERY_GITHUB_TOKEN` has write access to the repo and `GITHUB_OWNER`/`GITHUB_REPO` are correct.
