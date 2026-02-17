@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
 
@@ -11,6 +12,7 @@ from .config import load_settings
 from .ingestion.dedupe import filter_existing_records, filter_existing_youtube_records
 from .ingestion.rss import fetch_all_feeds, load_feed_configs_from_env
 from .ingestion.youtube import fetch_all_channels, load_youtube_channel_configs_from_env
+from .processing.chunking import chunk_text
 
 LOGGER = logging.getLogger("research.pipeline")
 if not LOGGER.handlers:
@@ -121,7 +123,126 @@ def run_ingestion(*, pipeline_run_id: str | None = None) -> str:
 
 def run_embedding(*, pipeline_run_id: str | None = None) -> str:
     pipeline_run_id = pipeline_run_id or str(uuid.uuid4())
-    _run_stage("embedding", pipeline_run_id)
+
+    start = time.perf_counter()
+    _log_event(pipeline_run_id=pipeline_run_id, stage="embedding", event="start")
+
+    settings = load_settings()
+    window_size = int(os.getenv("CHUNK_WINDOW_SIZE", "200"))
+    overlap = int(os.getenv("CHUNK_OVERLAP", "40"))
+
+    import psycopg
+
+    sources_processed = 0
+    chunks_created = 0
+    chunks_updated = 0
+
+    with psycopg.connect(settings.postgres_dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    s.id,
+                    s.metadata ->> 'content' AS content
+                FROM sources AS s
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COUNT(*) AS chunk_count,
+                        MAX(updated_at) AS latest_chunk_updated_at
+                    FROM chunks
+                    WHERE source_id = s.id
+                ) AS c ON TRUE
+                WHERE COALESCE(s.metadata ->> 'content', '') <> ''
+                  AND (
+                    c.chunk_count = 0
+                    OR s.updated_at > COALESCE(c.latest_chunk_updated_at, '-infinity'::timestamptz)
+                  )
+                ORDER BY s.id
+                """
+            )
+            sources_to_process = cursor.fetchall()
+
+        for source_id, content in sources_to_process:
+            if not content:
+                continue
+
+            sources_processed += 1
+            desired_chunks = chunk_text(content, window_size=window_size, overlap=overlap)
+
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT chunk_index, content, token_count
+                    FROM chunks
+                    WHERE source_id = %s
+                    """,
+                    (source_id,),
+                )
+                existing_rows = cursor.fetchall()
+
+            existing = {
+                chunk_index: (chunk_content, token_count)
+                for chunk_index, chunk_content, token_count in existing_rows
+            }
+
+            for chunk in desired_chunks:
+                existing_chunk = existing.get(chunk.chunk_index)
+
+                if existing_chunk is None:
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            """
+                            INSERT INTO chunks (source_id, chunk_index, content, token_count)
+                            VALUES (%s, %s, %s, %s)
+                            """,
+                            (source_id, chunk.chunk_index, chunk.content, chunk.token_count),
+                        )
+                    chunks_created += 1
+                    continue
+
+                existing_content, existing_token_count = existing_chunk
+                if existing_content == chunk.content and existing_token_count == chunk.token_count:
+                    continue
+
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE chunks
+                        SET content = %s,
+                            token_count = %s
+                        WHERE source_id = %s
+                          AND chunk_index = %s
+                        """,
+                        (chunk.content, chunk.token_count, source_id, chunk.chunk_index),
+                    )
+                chunks_updated += 1
+
+            desired_indexes = {chunk.chunk_index for chunk in desired_chunks}
+            stale_indexes = [chunk_index for chunk_index in existing if chunk_index not in desired_indexes]
+            if stale_indexes:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        DELETE FROM chunks
+                        WHERE source_id = %s
+                          AND chunk_index = ANY(%s)
+                        """,
+                        (source_id, stale_indexes),
+                    )
+
+        connection.commit()
+
+    elapsed = time.perf_counter() - start
+    _log_event(
+        pipeline_run_id=pipeline_run_id,
+        stage="embedding",
+        event="complete",
+        elapsed_s=elapsed,
+        sources_processed=sources_processed,
+        chunks_created=chunks_created,
+        chunks_updated=chunks_updated,
+    )
+
     return pipeline_run_id
 
 
