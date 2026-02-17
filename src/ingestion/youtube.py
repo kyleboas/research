@@ -24,7 +24,7 @@ class YouTubeChannelConfig:
 
     name: str
     channel_id: str
-    latest_limit: int = 5
+    latest_limit: int = 10
     timeout_s: float = 12.0
 
 
@@ -132,7 +132,7 @@ def load_youtube_channel_configs_from_env() -> list[YouTubeChannelConfig]:
     """
 
     raw = os.getenv("YOUTUBE_CHANNELS", "")
-    latest_limit = int(os.getenv("YOUTUBE_LATEST_LIMIT", "5"))
+    latest_limit = int(os.getenv("YOUTUBE_LATEST_LIMIT", "10"))
     timeout_s = float(os.getenv("YOUTUBE_TIMEOUT_S", "12"))
 
     if not raw.strip():
