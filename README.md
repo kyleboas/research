@@ -50,11 +50,15 @@ python -m src.pipeline all --pipeline-run-id "$RUN_ID"
 
 ## RSS troubleshooting
 
-Some feeds block specific bot user-agents and return `HTTP 403`. Configure `RSS_FEED_USER_AGENTS` to rotate through one or more values (separate with `||`) during ingestion retries.
+Some feeds (notably Substack/Cloudflare-protected feeds) block thin non-browser requests and return `HTTP 403`. The RSS client now sends a browser-like baseline header set and logs response snippets for `HTTPError` failures to help diagnose WAF blocks.
+
+Set one consistent user-agent with `RSS_FEED_USER_AGENT` (preferred):
 
 ```bash
-RSS_FEED_USER_AGENTS="Mozilla/5.0 (...)||Feedly/1.0 (+http://www.feedly.com/fetcher.html)"
+RSS_FEED_USER_AGENT="Mozilla/5.0 (compatible; ResearchBot/1.0; +https://github.com/kyleboas/research)"
 ```
+
+`RSS_FEED_USER_AGENTS` is still supported for backwards compatibility, but only the first non-empty value is used.
 
 ## Testing
 

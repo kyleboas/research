@@ -13,6 +13,7 @@ import re
 import time
 from typing import Iterable
 from urllib.parse import urlparse
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
@@ -50,10 +51,7 @@ RSS_NS = {
     "content": "http://purl.org/rss/1.0/modules/content/",
 }
 
-DEFAULT_RSS_USER_AGENTS = (
-    "Mozilla/5.0 (compatible; ResearchBot/1.0; +https://github.com/kyleboas/research)",
-    "Feedly/1.0 (+http://www.feedly.com/fetcher.html)",
-)
+DEFAULT_RSS_USER_AGENT = "Mozilla/5.0 (compatible; ResearchBot/1.0; +https://github.com/kyleboas/research)"
 
 
 def _text(node: ET.Element | None) -> str:
@@ -88,32 +86,54 @@ def _stable_source_key(*, guid: str | None, url: str, title: str, published_at: 
 
 
 def _fetch_feed_document(config: FeedConfig) -> bytes:
-    user_agents = _rss_user_agents()
+    headers = _rss_request_headers()
     last_error: Exception | None = None
     for attempt in range(config.retries + 1):
-        for user_agent in user_agents:
-            try:
-                request = Request(
-                    config.url,
-                    headers={
-                        "User-Agent": user_agent,
-                        "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8",
-                    },
-                )
-                with urlopen(request, timeout=config.timeout_s) as response:  # noqa: S310
-                    return response.read()
-            except Exception as exc:  # broad by design for network and parser errors
-                last_error = exc
+        try:
+            request = Request(config.url, headers=headers)
+            with urlopen(request, timeout=config.timeout_s) as response:  # noqa: S310
+                return response.read()
+        except HTTPError as exc:
+            body = exc.read(2000)
+            LOGGER.warning(
+                "HTTPError %s while fetching '%s' (%s); headers=%s; body_snippet=%r",
+                exc.code,
+                config.name,
+                config.url,
+                dict(exc.headers.items()) if exc.headers else {},
+                body,
+            )
+            last_error = exc
+        except Exception as exc:  # broad by design for network and parser errors
+            last_error = exc
         if attempt < config.retries:
             time.sleep(config.backoff_base_s * (2**attempt))
     assert last_error is not None
     raise last_error
 
 
-def _rss_user_agents() -> tuple[str, ...]:
-    raw = os.getenv("RSS_FEED_USER_AGENTS", "")
-    configured = tuple(value.strip() for value in raw.split("||") if value.strip())
-    return configured or DEFAULT_RSS_USER_AGENTS
+def _rss_request_headers() -> dict[str, str]:
+    return {
+        "User-Agent": _rss_user_agent(),
+        "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+
+
+def _rss_user_agent() -> str:
+    explicit = os.getenv("RSS_FEED_USER_AGENT", "").strip()
+    if explicit:
+        return explicit
+
+    # Backwards compatibility: if older multi-agent setting is present, use the first value.
+    raw_multi = os.getenv("RSS_FEED_USER_AGENTS", "")
+    for candidate in raw_multi.split("||"):
+        user_agent = candidate.strip()
+        if user_agent:
+            return user_agent
+    return DEFAULT_RSS_USER_AGENT
 
 
 def _parse_atom_items(root: ET.Element, feed_name: str) -> list[RSSRecord]:
@@ -176,7 +196,8 @@ def parse_feed(content: bytes, *, feed_name: str, latest_limit: int = 10) -> lis
     else:
         records = _parse_rss_items(root, feed_name)
 
-    return sorted(records[:latest_limit], key=lambda record: (record.source_key, record.url, record.title))
+    records = sorted(records, key=lambda record: (record.source_key, record.url, record.title))
+    return records[:latest_limit]
 
 
 def fetch_feed(config: FeedConfig) -> tuple[list[RSSRecord], Exception | None]:
