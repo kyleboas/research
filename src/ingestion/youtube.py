@@ -16,6 +16,7 @@ from socket import gaierror
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+import xml.etree.ElementTree as ET
 
 LOGGER = logging.getLogger("research.ingestion.youtube")
 
@@ -138,6 +139,74 @@ def _extract_items(payload: dict[str, object]) -> list[dict[str, object]]:
     return []
 
 
+def _extract_video_id_from_url(url: str) -> str:
+    match = re.search(r"[?&]v=([A-Za-z0-9_-]{6,})", url)
+    return match.group(1) if match else ""
+
+
+def _fetch_channel_videos_from_rss(channel: YouTubeChannelConfig) -> list[dict[str, object]]:
+    """Fetch latest channel videos from the public YouTube RSS feed."""
+
+    feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel.channel_id}"
+    request = Request(
+        feed_url,
+        headers={
+            "Accept": "application/atom+xml, application/xml;q=0.9, */*;q=0.8",
+            "User-Agent": "Mozilla/5.0 (compatible; ResearchBot/1.0)",
+        },
+        method="GET",
+    )
+
+    last_error: Exception | None = None
+    payload = b""
+    for attempt in range(channel.retries + 1):
+        try:
+            with urlopen(request, timeout=channel.timeout_s) as response:
+                payload = response.read()
+            break
+        except Exception as exc:  # pragma: no cover - defensive network handling
+            last_error = exc
+            if attempt < channel.retries:
+                time.sleep(channel.backoff_base_s * (2**attempt))
+    else:
+        assert last_error is not None
+        raise RuntimeError(f"request failed: {last_error}") from last_error
+
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError as exc:
+        raise RuntimeError("invalid YouTube channel feed XML") from exc
+
+    namespace = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
+    videos: list[dict[str, object]] = []
+
+    for entry in root.findall("atom:entry", namespace):
+        video_id = (entry.findtext("yt:videoId", default="", namespaces=namespace) or "").strip()
+        title = (entry.findtext("atom:title", default="", namespaces=namespace) or "").strip()
+        url = ""
+        link = entry.find("atom:link", namespace)
+        if link is not None:
+            url = str(link.attrib.get("href", "")).strip()
+
+        if not video_id:
+            video_id = _extract_video_id_from_url(url)
+
+        published_at = (entry.findtext("atom:published", default="", namespaces=namespace) or "").strip()
+        if not video_id:
+            continue
+
+        videos.append(
+            {
+                "video_id": video_id,
+                "title": title,
+                "url": url,
+                "published_at": published_at,
+            }
+        )
+
+    return videos[: max(channel.latest_limit, 1)]
+
+
 def _extract_text(payload: dict[str, object]) -> str:
     for key in ("transcript", "text", "content"):
         value = payload.get(key)
@@ -254,18 +323,14 @@ def fetch_channel_latest_videos(
     api_key: str,
     provider_base_url: str,
 ) -> list[dict[str, object]]:
-    """Fetch latest videos for a configured YouTube channel."""
+    """Fetch latest videos for a configured YouTube channel.
 
-    payload = _http_json(
-        base_url=provider_base_url,
-        path="/youtube/channel/videos",
-        query={"channel": channel.channel_id, "limit": channel.latest_limit},
-        api_key=api_key,
-        timeout_s=channel.timeout_s,
-        retries=channel.retries,
-        backoff_base_s=channel.backoff_base_s,
-    )
-    return _extract_items(payload)
+    We rely on YouTube's public channel feed for video discovery and reserve the
+    transcript provider API for transcript retrieval only.
+    """
+
+    del api_key, provider_base_url
+    return _fetch_channel_videos_from_rss(channel)
 
 
 def fetch_video_transcript(
