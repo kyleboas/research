@@ -193,7 +193,7 @@ def _http_json(
 
 
 def _extract_items(payload: dict[str, object]) -> list[dict[str, object]]:
-    for key in ("videos", "items", "data"):
+    for key in ("videos", "items", "data", "results"):
         value = payload.get(key)
         if isinstance(value, list):
             return [item for item in value if isinstance(item, dict)]
