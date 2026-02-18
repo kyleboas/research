@@ -38,10 +38,6 @@
   - Feed: https://marcolai.substack.com/feed
   - Site: https://marcolai.substack.com
 
-- **BallerzBantz**
-  - Feed: https://ballerzbantz.ghost.io/rss/
-  - Site: https://ballerzbantz.ghost.io/
-
 - **BarcaFutbol**
   - Feed: https://barcafutbol.substack.com/feed
   - Site: https://barcafutbol.substack.com
@@ -320,7 +316,7 @@
 
 ## 3. Reporters
 
-- **Barney Ronay | The Guardian**
+- **Barney Ronay - The Guardian**
   - Feed: https://www.theguardian.com/profile/barneyronay/rss
   - Site: https://www.theguardian.com/profile/barneyronay
 
@@ -332,7 +328,7 @@
   - Feed: https://www.nytimes.com/athletic/rss/author/colin-millar/
   - Site: https://www.nytimes.com/athletic/author/colin-millar/
 
-- **David Hytner | The Guardian**
+- **David Hytner - The Guardian**
   - Feed: https://www.theguardian.com/profile/davidhytner/rss
   - Site: https://www.theguardian.com/profile/davidhytner
 
@@ -340,19 +336,19 @@
   - Feed: https://www.nytimes.com/athletic/rss/author/david-ornstein/
   - Site: https://www.nytimes.com/athletic/author/david-ornstein/
 
-- **Ed Aarons | The Guardian**
+- **Ed Aarons - The Guardian**
   - Feed: https://www.theguardian.com/profile/ed-aarons/rss
   - Site: https://www.theguardian.com/profile/ed-aarons
 
-- **Jamie Jackson | The Guardian**
+- **Jamie Jackson - The Guardian**
   - Feed: https://www.theguardian.com/profile/jamiejackson/rss
   - Site: https://www.theguardian.com/profile/jamiejackson
 
-- **Jon Brodkin | The Guardian**
+- **Jon Brodkin - The Guardian**
   - Feed: https://www.theguardian.com/profile/jonbrodkin/rss
   - Site: https://www.theguardian.com/profile/jonbrodkin
 
-- **Jonathan Liew | The Guardian**
+- **Jonathan Liew - The Guardian**
   - Feed: https://www.theguardian.com/profile/jonathan-liew/rss
   - Site: https://www.theguardian.com/profile/jonathan-liew
 
@@ -360,7 +356,7 @@
   - Feed: https://www.independent.co.uk/author/miguel-delaney/rss
   - Site: https://www.independent.co.uk/author/miguel-delaney/rss
 
-- **Nick Ames | The Guardian**
+- **Nick Ames - The Guardian**
   - Feed: https://www.theguardian.com/profile/nick-ames/rss
   - Site: https://www.theguardian.com/profile/nick-ames
 
@@ -372,13 +368,13 @@
   - Feed: https://www.nytimes.com/athletic/rss/author/rory-smith/
   - Site: https://www.nytimes.com/athletic/author/rory-smith/
 
-- **Sid Lowe | The Guardian**
+- **Sid Lowe - The Guardian**
   - Feed: https://www.theguardian.com/profile/sidlowe/rss
   - Site: https://www.theguardian.com/profile/sidlowe
 
 ## 6. Other Sports
 
-- **ALLABOUTFPL: Your one stop place for all FPL tips, FPL captain picks, FPL news, FPL players, previews, reviews,differential picks, analysis and weekly updates.**
+- **ALLABOUTFPL**
   - Feed: https://allaboutfpl.com/feed/
   - Site: https://allaboutfpl.com/
 

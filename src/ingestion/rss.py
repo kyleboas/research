@@ -86,7 +86,7 @@ def _fetch_feed_document(config: FeedConfig) -> bytes:
     last_error: Exception | None = None
     for attempt in range(config.retries + 1):
         try:
-            request = Request(config.url, headers={"User-Agent": "research-pipeline/1.0"})
+            request = Request(config.url, headers={"User-Agent": "Feedly/1.0 (+http://www.feedly.com/fetcher.html)"})
             with urlopen(request, timeout=config.timeout_s) as response:  # noqa: S310
                 return response.read()
         except Exception as exc:  # broad by design for network and parser errors
