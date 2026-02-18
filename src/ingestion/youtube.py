@@ -257,8 +257,8 @@ def fetch_channel_latest_videos(
 
     payload = _http_json(
         base_url=provider_base_url,
-        path="/youtube/channel/latest",
-        query={"channel_id": channel.channel_id, "limit": channel.latest_limit},
+        path="/youtube/channel/videos",
+        query={"channel": channel.channel_id, "limit": channel.latest_limit},
         api_key=api_key,
         timeout_s=channel.timeout_s,
         retries=channel.retries,
@@ -280,8 +280,8 @@ def fetch_video_transcript(
 
     payload = _http_json(
         base_url=provider_base_url,
-        path="/youtube/transcript/search",
-        query={"video_id": video_id},
+        path="/youtube/transcript",
+        query={"video_url": f"https://www.youtube.com/watch?v={video_id}"},
         api_key=api_key,
         timeout_s=timeout_s,
         retries=retries,
@@ -341,7 +341,7 @@ def fetch_all_channels(
 ) -> tuple[list[YouTubeRecord], int, int]:
     """Poll all configured channels and return records + failed channels + missing transcripts."""
 
-    base_url = provider_base_url or os.getenv("TRANSCRIPT_API_BASE_URL", "https://api.transcriptapi.com")
+    base_url = provider_base_url or os.getenv("TRANSCRIPT_API_BASE_URL", "https://transcriptapi.com/api/v2")
 
     records: list[YouTubeRecord] = []
     failed_channels = 0
