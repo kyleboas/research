@@ -11,6 +11,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -26,6 +27,8 @@ class YouTubeChannelConfig:
     channel_id: str
     latest_limit: int = 10
     timeout_s: float = 12.0
+    retries: int = 2
+    backoff_base_s: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -83,18 +86,38 @@ def _build_headers(api_key: str) -> dict[str, str]:
     }
 
 
-def _http_json(*, base_url: str, path: str, query: dict[str, str | int], api_key: str, timeout_s: float) -> dict[str, object]:
+def _http_json(
+    *,
+    base_url: str,
+    path: str,
+    query: dict[str, str | int],
+    api_key: str,
+    timeout_s: float,
+    retries: int = 2,
+    backoff_base_s: float = 1.0,
+) -> dict[str, object]:
     encoded_query = urlencode([(key, str(value)) for key, value in query.items() if value != ""])
     url = f"{base_url.rstrip('/')}{path}"
     if encoded_query:
         url = f"{url}?{encoded_query}"
 
     request = Request(url, headers=_build_headers(api_key), method="GET")
-    try:
-        with urlopen(request, timeout=timeout_s) as response:
-            payload = response.read()
-    except (HTTPError, URLError, TimeoutError) as exc:
-        raise RuntimeError(f"request failed: {exc}") from exc
+    last_error: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            with urlopen(request, timeout=timeout_s) as response:
+                payload = response.read()
+            break
+        except HTTPError as exc:
+            # 4xx errors are permanent — do not retry.
+            raise RuntimeError(f"request failed: {exc}") from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+            if attempt < retries:
+                time.sleep(backoff_base_s * (2**attempt))
+    else:
+        assert last_error is not None
+        raise RuntimeError(f"request failed: {last_error}") from last_error
 
     try:
         decoded = json.loads(payload.decode("utf-8"))
@@ -134,6 +157,8 @@ def load_youtube_channel_configs_from_env() -> list[YouTubeChannelConfig]:
     raw = os.getenv("YOUTUBE_CHANNELS", "")
     latest_limit = int(os.getenv("YOUTUBE_LATEST_LIMIT", "10"))
     timeout_s = float(os.getenv("YOUTUBE_TIMEOUT_S", "12"))
+    retries = int(os.getenv("YOUTUBE_RETRIES", "2"))
+    backoff_base_s = float(os.getenv("YOUTUBE_BACKOFF_BASE_S", "1.0"))
 
     if not raw.strip():
         channels_file = Path(
@@ -158,6 +183,8 @@ def load_youtube_channel_configs_from_env() -> list[YouTubeChannelConfig]:
                 channel_id=channel_id,
                 latest_limit=max(latest_limit, 1),
                 timeout_s=max(timeout_s, 1.0),
+                retries=max(retries, 0),
+                backoff_base_s=max(backoff_base_s, 0.0),
             )
         )
 
@@ -234,6 +261,8 @@ def fetch_channel_latest_videos(
         query={"channel_id": channel.channel_id, "limit": channel.latest_limit},
         api_key=api_key,
         timeout_s=channel.timeout_s,
+        retries=channel.retries,
+        backoff_base_s=channel.backoff_base_s,
     )
     return _extract_items(payload)
 
@@ -244,6 +273,8 @@ def fetch_video_transcript(
     api_key: str,
     provider_base_url: str,
     timeout_s: float,
+    retries: int = 2,
+    backoff_base_s: float = 1.0,
 ) -> str:
     """Fetch transcript text for a single YouTube video."""
 
@@ -253,6 +284,8 @@ def fetch_video_transcript(
         query={"video_id": video_id},
         api_key=api_key,
         timeout_s=timeout_s,
+        retries=retries,
+        backoff_base_s=backoff_base_s,
     )
     return _extract_text(payload)
 
@@ -286,6 +319,8 @@ def poll_channel_videos(
                 api_key=api_key,
                 provider_base_url=provider_base_url,
                 timeout_s=channel.timeout_s,
+                retries=channel.retries,
+                backoff_base_s=channel.backoff_base_s,
             )
         except Exception as exc:  # pragma: no cover - defensive path
             LOGGER.info("Transcript unavailable for video '%s' (%s): %s", video_id, channel.name, exc)

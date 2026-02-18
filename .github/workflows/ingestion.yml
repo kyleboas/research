@@ -8,6 +8,7 @@ on:
 jobs:
   ingestion:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -15,6 +16,8 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       TRANSCRIPT_API_KEY: ${{ secrets.TRANSCRIPT_API_KEY }}
+      NEWSBLUR_USERNAME: ${{ secrets.NEWSBLUR_USERNAME }}
+      NEWSBLUR_PASSWORD: ${{ secrets.NEWSBLUR_PASSWORD }}
       GITHUB_TOKEN: ${{ secrets.DELIVERY_GITHUB_TOKEN }}
       GITHUB_OWNER: ${{ github.repository_owner }}
       GITHUB_REPO: ${{ github.event.repository.name }}
