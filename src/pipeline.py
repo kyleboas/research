@@ -16,6 +16,7 @@ from .delivery.email import send_summary_email
 from .delivery.github_publish import publish_report_markdown
 from .delivery.slack import post_report_summary
 from .ingestion.dedupe import filter_existing_records, filter_existing_youtube_records
+from .ingestion.newsblur import fetch_newsblur_records, load_newsblur_config_from_env
 from .ingestion.rss import fetch_all_feeds, load_feed_configs_from_env
 from .ingestion.youtube import fetch_all_channels, load_youtube_channel_configs_from_env
 from .generation.critique_pass import run_critique_pass
@@ -254,11 +255,21 @@ def run_ingestion(*, pipeline_run_id: str | None = None) -> str:
     feed_configs = load_feed_configs_from_env()
     youtube_channels = load_youtube_channel_configs_from_env()
 
-    rss_records, failed_feeds = fetch_all_feeds(feed_configs)
     youtube_records, failed_channels, missing_transcripts = fetch_all_channels(
         youtube_channels,
         api_key=settings.transcript_api_key,
     )
+
+    # NewsBlur is the default RSS ingestion path.  When credentials are present
+    # it replaces direct feed fetching; otherwise fall back to direct RSS.
+    newsblur_config = load_newsblur_config_from_env()
+    failed_newsblur = 0
+    if newsblur_config is not None:
+        rss_records, nb_error = fetch_newsblur_records(newsblur_config)
+        failed_newsblur = int(nb_error is not None)
+        failed_feeds = 0
+    else:
+        rss_records, failed_feeds = fetch_all_feeds(feed_configs)
 
     import psycopg
 
@@ -284,12 +295,14 @@ def run_ingestion(*, pipeline_run_id: str | None = None) -> str:
         stage="ingestion",
         event="complete",
         elapsed_s=elapsed,
+        rss_source="newsblur" if newsblur_config is not None else "direct",
         fetched_rss=len(rss_records),
         fetched_youtube=len(youtube_records),
         deduped_rss=len(deduped_rss.duplicate_records),
         deduped_youtube=len(deduped_youtube.duplicate_records),
         inserted=inserted,
         failed_rss=failed_feeds,
+        failed_newsblur=failed_newsblur,
         failed_youtube=failed_channels,
         missing_youtube_transcripts=missing_transcripts,
     )
