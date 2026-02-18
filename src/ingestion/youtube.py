@@ -325,12 +325,43 @@ def fetch_channel_latest_videos(
 ) -> list[dict[str, object]]:
     """Fetch latest videos for a configured YouTube channel.
 
-    We rely on YouTube's public channel feed for video discovery and reserve the
-    transcript provider API for transcript retrieval only.
+    Uses the transcript provider `/youtube/channel/latest` endpoint directly.
     """
 
-    del api_key, provider_base_url
-    return _fetch_channel_videos_from_rss(channel)
+    payload = _http_json(
+        base_url=provider_base_url,
+        path="/youtube/channel/latest",
+        query={
+            "channel_url": channel.channel_id,
+            "limit": channel.latest_limit,
+        },
+        api_key=api_key,
+        timeout_s=channel.timeout_s,
+        retries=channel.retries,
+        backoff_base_s=channel.backoff_base_s,
+    )
+
+    videos: list[dict[str, object]] = []
+    for item in _extract_items(payload):
+        video_id = str(item.get("video_id") or item.get("id") or "").strip()
+        url = str(item.get("url") or item.get("video_url") or "").strip()
+        if not video_id and url:
+            video_id = _extract_video_id_from_url(url)
+        if not url and video_id:
+            url = f"https://www.youtube.com/watch?v={video_id}"
+        if not video_id:
+            continue
+
+        videos.append(
+            {
+                "video_id": video_id,
+                "title": str(item.get("title") or "").strip(),
+                "url": url,
+                "published_at": str(item.get("published_at") or item.get("publishedAt") or "").strip(),
+            }
+        )
+
+    return videos[: max(channel.latest_limit, 1)]
 
 
 def fetch_video_transcript(
