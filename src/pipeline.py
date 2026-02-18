@@ -70,15 +70,16 @@ def _persist_stage_cost_metrics(
         cursor.execute(
             """
             SELECT
+                MAX(CASE WHEN column_name = 'run_name' THEN 1 ELSE 0 END) = 1 AS has_run_name,
                 MAX(CASE WHEN column_name = 'metadata' THEN 1 ELSE 0 END) = 1 AS has_metadata,
                 MAX(CASE WHEN column_name = 'cost_estimate_json' THEN 1 ELSE 0 END) = 1 AS has_cost_estimate_json
             FROM information_schema.columns
             WHERE table_schema = current_schema()
               AND table_name = 'pipeline_runs'
-              AND column_name IN ('metadata', 'cost_estimate_json')
+              AND column_name IN ('run_name', 'metadata', 'cost_estimate_json')
             """
         )
-        has_metadata_column, has_cost_column = (bool(value) for value in cursor.fetchone())
+        has_run_name_column, has_metadata_column, has_cost_column = (bool(value) for value in cursor.fetchone())
 
         select_columns = ["id"]
         if has_metadata_column:
@@ -86,57 +87,95 @@ def _persist_stage_cost_metrics(
         if has_cost_column:
             select_columns.append("cost_estimate_json")
 
-        cursor.execute(
-            f"""
-            SELECT {', '.join(select_columns)}
-            FROM pipeline_runs
-            WHERE run_name = %s
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (pipeline_run_id,),
-        )
-        row = cursor.fetchone()
+        if has_run_name_column:
+            try:
+                cursor.execute(
+                    f"""
+                    SELECT {', '.join(select_columns)}
+                    FROM pipeline_runs
+                    WHERE run_name = %s
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (pipeline_run_id,),
+                )
+                row = cursor.fetchone()
+            except Exception as exc:  # pragma: no cover - exercised via mocked sqlstate in tests
+                if getattr(exc, "sqlstate", None) != "42703":
+                    raise
+                has_run_name_column = False
+                if has_metadata_column:
+                    cursor.execute(
+                        f"""
+                        SELECT {', '.join(select_columns)}
+                        FROM pipeline_runs
+                        WHERE metadata ->> 'pipeline_run_id' = %s
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (pipeline_run_id,),
+                    )
+                    row = cursor.fetchone()
+                else:
+                    row = None
+        elif has_metadata_column:
+            cursor.execute(
+                f"""
+                SELECT {', '.join(select_columns)}
+                FROM pipeline_runs
+                WHERE metadata ->> 'pipeline_run_id' = %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (pipeline_run_id,),
+            )
+            row = cursor.fetchone()
+        else:
+            row = None
         expected_columns = 1 + int(has_metadata_column) + int(has_cost_column)
         if row is not None and len(row) != expected_columns:
             return
 
         if row is None:
-            if has_cost_column and has_metadata_column:
+            insert_columns: list[str] = ["status"]
+            insert_values: list[str] = ["%s"]
+            insert_params: list[object] = ["running"]
+
+            if has_run_name_column:
+                insert_columns.insert(0, "run_name")
+                insert_values.insert(0, "%s")
+                insert_params.insert(0, pipeline_run_id)
+            if has_metadata_column:
+                insert_columns.append("metadata")
+                insert_values.append("%s::jsonb")
+                insert_params.append(json.dumps({"pipeline_run_id": pipeline_run_id}))
+            if has_cost_column:
+                insert_columns.append("cost_estimate_json")
+                insert_values.append("%s::jsonb")
+                insert_params.append(json.dumps({}))
+
+            try:
                 cursor.execute(
-                    """
-                    INSERT INTO pipeline_runs (run_name, status, metadata, cost_estimate_json)
-                    VALUES (%s, %s, %s::jsonb, %s::jsonb)
+                    f"""
+                    INSERT INTO pipeline_runs ({', '.join(insert_columns)})
+                    VALUES ({', '.join(insert_values)})
                     RETURNING id
                     """,
-                    (pipeline_run_id, "running", json.dumps({"pipeline_run_id": pipeline_run_id}), json.dumps({})),
+                    tuple(insert_params),
                 )
-            elif has_metadata_column:
+            except Exception as exc:  # pragma: no cover - exercised via mocked sqlstate in tests
+                if not has_run_name_column or getattr(exc, "sqlstate", None) != "42703":
+                    raise
+                insert_columns = [column for column in insert_columns if column != "run_name"]
+                insert_values = insert_values[1:]
+                insert_params = insert_params[1:]
                 cursor.execute(
-                    """
-                    INSERT INTO pipeline_runs (run_name, status, metadata)
-                    VALUES (%s, %s, %s::jsonb)
+                    f"""
+                    INSERT INTO pipeline_runs ({', '.join(insert_columns)})
+                    VALUES ({', '.join(insert_values)})
                     RETURNING id
                     """,
-                    (pipeline_run_id, "running", json.dumps({"pipeline_run_id": pipeline_run_id})),
-                )
-            elif has_cost_column:
-                cursor.execute(
-                    """
-                    INSERT INTO pipeline_runs (run_name, status, cost_estimate_json)
-                    VALUES (%s, %s, %s::jsonb)
-                    RETURNING id
-                    """,
-                    (pipeline_run_id, "running", json.dumps({})),
-                )
-            else:
-                cursor.execute(
-                    """
-                    INSERT INTO pipeline_runs (run_name, status)
-                    VALUES (%s, %s)
-                    RETURNING id
-                    """,
-                    (pipeline_run_id, "running"),
+                    tuple(insert_params),
                 )
             run_id = cursor.fetchone()[0]
             existing_metadata: dict[str, object] = {"pipeline_run_id": pipeline_run_id}
