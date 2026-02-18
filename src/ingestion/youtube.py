@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
 LOGGER = logging.getLogger("research.ingestion.youtube")
+RETRYABLE_HTTP_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 
 @dataclass(frozen=True)
@@ -84,8 +85,17 @@ def _build_headers(api_key: str) -> dict[str, str]:
     return {
         "Accept": "application/json",
         "Authorization": f"Bearer {api_key}",
-        "X-API-Key": api_key,
+        "User-Agent": "Mozilla/5.0 (compatible; ResearchBot/1.0)",
     }
+
+
+def normalize_channel(value: str) -> str:
+    """Normalize channel input for `/youtube/channel/latest` (`channel=` query param)."""
+
+    normalized = (value or "").strip()
+    if normalized.startswith(("UC", "@", "http://", "https://")):
+        return normalized
+    return f"@{normalized}" if normalized else normalized
 
 
 def _http_json(
@@ -111,8 +121,17 @@ def _http_json(
                 payload = response.read()
             break
         except HTTPError as exc:
-            # 4xx errors are permanent — do not retry.
-            raise RuntimeError(f"request failed: {exc}") from exc
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            except Exception:  # pragma: no cover - defensive network handling
+                body = ""
+
+            if exc.code in RETRYABLE_HTTP_STATUS_CODES and attempt < retries:
+                time.sleep(backoff_base_s * (2**attempt))
+                continue
+
+            raise RuntimeError(f"request failed: HTTP {exc.code} {exc.reason}: {body[:800]}") from exc
         except (URLError, TimeoutError, OSError) as exc:
             last_error = exc
             if attempt < retries:
@@ -332,7 +351,7 @@ def fetch_channel_latest_videos(
         base_url=provider_base_url,
         path="/youtube/channel/latest",
         query={
-            "channel_url": channel.channel_id,
+            "channel": normalize_channel(channel.channel_id),
             "limit": channel.latest_limit,
         },
         api_key=api_key,

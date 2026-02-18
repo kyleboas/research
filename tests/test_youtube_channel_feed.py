@@ -22,7 +22,7 @@ def test_fetch_channel_latest_videos_uses_transcript_provider_api(monkeypatch) -
         del timeout
         assert request.full_url == (
             "https://transcriptapi.com/api/v2/youtube/channel/latest"
-            "?channel_url=UC123&limit=1"
+            "?channel=UC123&limit=1"
         )
         assert request.headers["Authorization"] == "Bearer api-key"
         return _FakeResponse(payload)
