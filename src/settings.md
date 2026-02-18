@@ -7,7 +7,7 @@
 
 | Setting | Value |
 |---|---|
-| ANTHROPIC_MODEL_ID | claude-3-5-sonnet-latest |
-| ANTHROPIC_SMALL_MODEL_ID | claude-3-5-haiku-latest |
+| ANTHROPIC_MODEL_ID | claude-4-6-sonnet |
+| ANTHROPIC_SMALL_MODEL_ID | claude-3-5-haiku |
 | ANTHROPIC_TREND_MODEL_ID | claude-sonnet-4-6 |
-| OPENAI_EMBEDDING_MODEL | text-embedding-3-large |
+| OPENAI_EMBEDDING_MODEL | text-embedding-3-large 
