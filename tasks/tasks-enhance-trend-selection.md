@@ -113,25 +113,25 @@ Update the file after completing each sub-task, not just after completing an ent
 
 > **Goal:** Wire `TrendPassResult` into `pipeline.py`, write all test cases. By now the implementation exists, so this batch is connecting and verifying.
 
-- [ ] 8.0 Update pipeline.py to handle TrendPassResult and TrendPassError
-  - [ ] 8.1 Import `TrendPassResult` and `TrendPassError` from `src.generation.trend_pass` in `pipeline.py`.
-  - [ ] 8.2 Update the `run_trend_pass()` call site (line 595) to capture a `TrendPassResult`; extract `.topic` for downstream use.
-  - [ ] 8.3 Wrap the `run_trend_pass()` call in a `try/except TrendPassError` block; on catch, log a warning (including `e.candidates_tried`) and set `topic = _FALLBACK_TOPIC` (import the constant or use the string directly).
-  - [ ] 8.4 After the trend call, write `trend_candidates` (serialised candidate list), `trend_lookback_days`, and `dedup_max_similarity` into the existing `stage_metrics` dict so they are stored in `pipeline_runs.metadata` alongside the other generation metrics.
+- [x] 8.0 Update pipeline.py to handle TrendPassResult and TrendPassError
+  - [x] 8.1 Import `TrendPassResult` and `TrendPassError` from `src.generation.trend_pass` in `pipeline.py`.
+  - [x] 8.2 Update the `run_trend_pass()` call site (line 595) to capture a `TrendPassResult`; extract `.topic` for downstream use.
+  - [x] 8.3 Wrap the `run_trend_pass()` call in a `try/except TrendPassError` block; on catch, log a warning (including `e.candidates_tried`) and set `topic = _FALLBACK_TOPIC` (import the constant or use the string directly).
+  - [x] 8.4 After the trend call, write `trend_candidates` (serialised candidate list), `trend_lookback_days`, and `dedup_max_similarity` into the existing `stage_metrics` dict so they are stored in `pipeline_runs.metadata` alongside the other generation metrics.
 
-- [ ] 9.0 Write tests
-  - [ ] 9.1 Test `_relative_age()`: same day → "today"; 1 day → "1 day ago"; 5 days → "5 days ago".
-  - [ ] 9.2 Test `_build_sources_summary()`: top 10 rows get 800-char snippets; row 11 gets 300-char snippet; labels are `[ARTICLE]` or `[TRANSCRIPT]` correctly; rows are sorted by recency.
-  - [ ] 9.3 Test `_build_source_activity_summary()`: 3 articles + 2 transcripts in last 2 days, 5 articles + 1 transcript in 3–7 days → correct formatted output. Test with expanded 14-day window → bucket label changes to "3–14 days ago".
-  - [ ] 9.4 Test `_parse_trend_candidates()`: valid JSON with 3 candidates returns 3 `TrendCandidate` objects; malformed JSON returns empty list; missing keys return empty list; 1 candidate returns empty list (minimum 2 required).
-  - [ ] 9.5 Test `_validate_topic()`: 4-word phrase → False; 26-word phrase → False; known-bad string → False; valid 10-word phrase → True. Confirm `"emerging football tactical trends"` (the fallback) is NOT in `_KNOWN_BAD_PATTERNS`.
-  - [ ] 9.6 Test `_normalise_text()`: mixed case → lowercase; punctuation stripped; multiple spaces collapsed.
-  - [ ] 9.7 Test `_is_exact_duplicate()`: exact string match → True; same meaning different wording → False; match after normalisation (case, punctuation) → True.
-  - [ ] 9.8 Test `_cosine_similarity()`: identical unit vectors → 1.0; orthogonal vectors → 0.0.
-  - [ ] 9.9 Test `_is_duplicate()` two-tier flow: exact match → returns `(True, None)` without calling `_embed_texts`; no exact match → calls `_embed_texts` and returns Tier 2 result. Mock `_embed_texts()` to verify it is only called when Tier 1 passes.
-  - [ ] 9.10 Test deduplication scoring: mock `_embed_texts()` to return vectors with similarity ≥ 0.85 → candidate is skipped; similarity < 0.85 → candidate is accepted; all candidates duplicate → candidate #1 is returned with a warning. Verify `dedup_max_similarity` is recorded.
-  - [ ] 9.11 Test adaptive window: mock `_query_sources()` to return 5 rows for 7 days and 15 rows for 14 days → function uses 14-day data and sets `TrendPassResult.lookback_days = 14`; zero rows for both → `_FALLBACK_TOPIC` returned with `dedup_max_similarity = None`.
-  - [ ] 9.12 Test validation + re-prompt flow: first candidate invalid, re-prompt returns valid → accepted; re-prompt also invalid → next candidate tried; all candidates invalid → `TrendPassError` raised with `candidates_tried` list populated.
-  - [ ] 9.13 Test `TrendPassError` carries data: raise with 3 candidates tried, catch it, verify `e.candidates_tried` has 3 entries with topic and reason fields.
-  - [ ] 9.14 Test `run_generation()` in `pipeline.py`: mock `run_trend_pass()` to raise `TrendPassError` → function catches it, uses fallback topic, does not crash.
-  - [ ] 9.15 Test fallback bypass: when `run_trend_pass` returns `_FALLBACK_TOPIC` (no sources found), verify `_validate_topic()` was never called. This confirms the fallback path bypasses validation.
+- [x] 9.0 Write tests
+  - [x] 9.1 Test `_relative_age()`: same day → "today"; 1 day → "1 day ago"; 5 days → "5 days ago".
+  - [x] 9.2 Test `_build_sources_summary()`: top 10 rows get 800-char snippets; row 11 gets 300-char snippet; labels are `[ARTICLE]` or `[TRANSCRIPT]` correctly; rows are sorted by recency.
+  - [x] 9.3 Test `_build_source_activity_summary()`: 3 articles + 2 transcripts in last 2 days, 5 articles + 1 transcript in 3–7 days → correct formatted output. Test with expanded 14-day window → bucket label changes to "3–14 days ago".
+  - [x] 9.4 Test `_parse_trend_candidates()`: valid JSON with 3 candidates returns 3 `TrendCandidate` objects; malformed JSON returns empty list; missing keys return empty list; 1 candidate returns empty list (minimum 2 required).
+  - [x] 9.5 Test `_validate_topic()`: 4-word phrase → False; 26-word phrase → False; known-bad string → False; valid 10-word phrase → True. Confirm `"emerging football tactical trends"` (the fallback) is NOT in `_KNOWN_BAD_PATTERNS`.
+  - [x] 9.6 Test `_normalise_text()`: mixed case → lowercase; punctuation stripped; multiple spaces collapsed.
+  - [x] 9.7 Test `_is_exact_duplicate()`: exact string match → True; same meaning different wording → False; match after normalisation (case, punctuation) → True.
+  - [x] 9.8 Test `_cosine_similarity()`: identical unit vectors → 1.0; orthogonal vectors → 0.0.
+  - [x] 9.9 Test `_is_duplicate()` two-tier flow: exact match → returns `(True, None)` without calling `_embed_texts`; no exact match → calls `_embed_texts` and returns Tier 2 result. Mock `_embed_texts()` to verify it is only called when Tier 1 passes.
+  - [x] 9.10 Test deduplication scoring: mock `_embed_texts()` to return vectors with similarity ≥ 0.85 → candidate is skipped; similarity < 0.85 → candidate is accepted; all candidates duplicate → candidate #1 is returned with a warning. Verify `dedup_max_similarity` is recorded.
+  - [x] 9.11 Test adaptive window: mock `_query_sources()` to return 5 rows for 7 days and 15 rows for 14 days → function uses 14-day data and sets `TrendPassResult.lookback_days = 14`; zero rows for both → `_FALLBACK_TOPIC` returned with `dedup_max_similarity = None`.
+  - [x] 9.12 Test validation + re-prompt flow: first candidate invalid, re-prompt returns valid → accepted; re-prompt also invalid → next candidate tried; all candidates invalid → `TrendPassError` raised with `candidates_tried` list populated.
+  - [x] 9.13 Test `TrendPassError` carries data: raise with 3 candidates tried, catch it, verify `e.candidates_tried` has 3 entries with topic and reason fields.
+  - [x] 9.14 Test `run_generation()` in `pipeline.py`: mock `run_trend_pass()` to raise `TrendPassError` → function catches it, uses fallback topic, does not crash.
+  - [x] 9.15 Test fallback bypass: when `run_trend_pass` returns `_FALLBACK_TOPIC` (no sources found), verify `_validate_topic()` was never called. This confirms the fallback path bypasses validation.

@@ -23,7 +23,7 @@ from .generation.critique_pass import run_critique_pass
 from .generation.draft_pass import run_draft_pass
 from .generation.research_pass import run_research_pass
 from .generation.revision_pass import run_revision_pass
-from .generation.trend_pass import TrendPassError, TrendPassResult, run_trend_pass
+from .generation.trend_pass import _FALLBACK_TOPIC, TrendPassError, TrendPassResult, run_trend_pass
 from .processing.chunking import chunk_text
 from .processing.embeddings import embed_chunks, upsert_embeddings
 from .verification.claims import extract_claims
@@ -618,8 +618,11 @@ def run_generation(
                     "dedup_max_similarity": trend_result.dedup_max_similarity,
                 }
             except TrendPassError as exc:
-                LOGGER.warning("Trend pass failed; using fallback topic", extra={"error": str(exc)})
-                topic = "emerging football tactical trends"
+                LOGGER.warning(
+                    "Trend pass failed; using fallback topic",
+                    extra={"error": str(exc), "candidates_tried": exc.candidates_tried},
+                )
+                topic = _FALLBACK_TOPIC
                 trend_metadata_updates = {
                     "trend_candidates": [entry.get("topic") for entry in exc.candidates_tried if entry.get("topic")],
                     "trend_lookback_days": 7,
@@ -670,6 +673,8 @@ def run_generation(
             "critique_elapsed_s": round(critique_elapsed, 3),
             "revision_elapsed_s": round(revision_elapsed, 3),
         }
+        if trend_metadata_updates:
+            stage_metrics.update(trend_metadata_updates)
 
         draft_path = artifacts_dir_path / "draft.md"
         critique_path = artifacts_dir_path / "critique.md"
