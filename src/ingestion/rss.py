@@ -50,6 +50,11 @@ RSS_NS = {
     "content": "http://purl.org/rss/1.0/modules/content/",
 }
 
+DEFAULT_RSS_USER_AGENTS = (
+    "Mozilla/5.0 (compatible; ResearchBot/1.0; +https://github.com/kyleboas/research)",
+    "Feedly/1.0 (+http://www.feedly.com/fetcher.html)",
+)
+
 
 def _text(node: ET.Element | None) -> str:
     return (node.text or "").strip() if node is not None else ""
@@ -83,19 +88,32 @@ def _stable_source_key(*, guid: str | None, url: str, title: str, published_at: 
 
 
 def _fetch_feed_document(config: FeedConfig) -> bytes:
+    user_agents = _rss_user_agents()
     last_error: Exception | None = None
     for attempt in range(config.retries + 1):
-        try:
-            request = Request(config.url, headers={"User-Agent": "Feedly/1.0 (+http://www.feedly.com/fetcher.html)"})
-            with urlopen(request, timeout=config.timeout_s) as response:  # noqa: S310
-                return response.read()
-        except Exception as exc:  # broad by design for network and parser errors
-            last_error = exc
-            if attempt >= config.retries:
-                break
+        for user_agent in user_agents:
+            try:
+                request = Request(
+                    config.url,
+                    headers={
+                        "User-Agent": user_agent,
+                        "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8",
+                    },
+                )
+                with urlopen(request, timeout=config.timeout_s) as response:  # noqa: S310
+                    return response.read()
+            except Exception as exc:  # broad by design for network and parser errors
+                last_error = exc
+        if attempt < config.retries:
             time.sleep(config.backoff_base_s * (2**attempt))
     assert last_error is not None
     raise last_error
+
+
+def _rss_user_agents() -> tuple[str, ...]:
+    raw = os.getenv("RSS_FEED_USER_AGENTS", "")
+    configured = tuple(value.strip() for value in raw.split("||") if value.strip())
+    return configured or DEFAULT_RSS_USER_AGENTS
 
 
 def _parse_atom_items(root: ET.Element, feed_name: str) -> list[RSSRecord]:
