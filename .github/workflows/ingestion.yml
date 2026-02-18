@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      PYTHONUNBUFFERED: "1"
+      RESEARCH_LOG_LEVEL: INFO
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}

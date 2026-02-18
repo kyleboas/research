@@ -56,6 +56,14 @@ Some feeds block specific bot user-agents and return `HTTP 403`. Configure `RSS_
 RSS_FEED_USER_AGENTS="Mozilla/5.0 (...)||Feedly/1.0 (+http://www.feedly.com/fetcher.html)"
 ```
 
+## YouTube TranscriptAPI ingestion logging
+
+Set `RESEARCH_LOG_LEVEL` to control runtime log verbosity across pipeline stages. The ingestion workflow sets this to `INFO` and now logs TranscriptAPI channel/video request attempts, response summaries, retries, and per-channel completion metrics to make silent YouTube failures diagnosable from `logs/ingestion.log`.
+
+```bash
+RESEARCH_LOG_LEVEL=INFO
+```
+
 ## Testing
 
 ```bash

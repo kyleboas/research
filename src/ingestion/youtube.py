@@ -116,9 +116,25 @@ def _http_json(
     request = Request(url, headers=_build_headers(api_key), method="GET")
     last_error: Exception | None = None
     for attempt in range(retries + 1):
+        LOGGER.info(
+            "YouTube TranscriptAPI request start: path=%s url=%s attempt=%d/%d timeout_s=%s",
+            path,
+            url,
+            attempt + 1,
+            retries + 1,
+            timeout_s,
+        )
         try:
             with urlopen(request, timeout=timeout_s) as response:
                 payload = response.read()
+                status_code = getattr(response, "status", "unknown")
+            LOGGER.info(
+                "YouTube TranscriptAPI request success: path=%s url=%s status=%s bytes=%d",
+                path,
+                url,
+                status_code,
+                len(payload),
+            )
             break
         except HTTPError as exc:
             body = ""
@@ -128,12 +144,37 @@ def _http_json(
                 body = ""
 
             if exc.code in RETRYABLE_HTTP_STATUS_CODES and attempt < retries:
+                LOGGER.warning(
+                    "YouTube TranscriptAPI request retryable HTTP error: path=%s url=%s status=%s reason=%s attempt=%d/%d",
+                    path,
+                    url,
+                    exc.code,
+                    exc.reason,
+                    attempt + 1,
+                    retries + 1,
+                )
                 time.sleep(backoff_base_s * (2**attempt))
                 continue
 
+            LOGGER.error(
+                "YouTube TranscriptAPI request failed with HTTP error: path=%s url=%s status=%s reason=%s response=%s",
+                path,
+                url,
+                exc.code,
+                exc.reason,
+                body[:400],
+            )
             raise RuntimeError(f"request failed: HTTP {exc.code} {exc.reason}: {body[:800]}") from exc
         except (URLError, TimeoutError, OSError) as exc:
             last_error = exc
+            LOGGER.warning(
+                "YouTube TranscriptAPI network error: path=%s url=%s attempt=%d/%d error=%s",
+                path,
+                url,
+                attempt + 1,
+                retries + 1,
+                exc,
+            )
             if attempt < retries:
                 time.sleep(backoff_base_s * (2**attempt))
     else:
@@ -147,6 +188,7 @@ def _http_json(
 
     if not isinstance(decoded, dict):
         raise RuntimeError("unexpected JSON response shape")
+    LOGGER.info("YouTube TranscriptAPI response decoded: path=%s keys=%s", path, sorted(decoded.keys()))
     return decoded
 
 
@@ -347,6 +389,14 @@ def fetch_channel_latest_videos(
     Uses the transcript provider `/youtube/channel/latest` endpoint directly.
     """
 
+    LOGGER.info(
+        "Fetching YouTube channel latest videos: channel=%s channel_id=%s base_url=%s limit=%d",
+        channel.name,
+        channel.channel_id,
+        provider_base_url,
+        channel.latest_limit,
+    )
+
     payload = _http_json(
         base_url=provider_base_url,
         path="/youtube/channel/latest",
@@ -380,7 +430,14 @@ def fetch_channel_latest_videos(
             }
         )
 
-    return videos[: max(channel.latest_limit, 1)]
+    selected = videos[: max(channel.latest_limit, 1)]
+    LOGGER.info(
+        "Fetched YouTube channel latest videos: channel=%s channel_id=%s fetched=%d",
+        channel.name,
+        channel.channel_id,
+        len(selected),
+    )
+    return selected
 
 
 def fetch_video_transcript(
@@ -394,6 +451,8 @@ def fetch_video_transcript(
 ) -> str:
     """Fetch transcript text for a single YouTube video."""
 
+    LOGGER.info("Fetching transcript for YouTube video: video_id=%s base_url=%s", video_id, provider_base_url)
+
     payload = _http_json(
         base_url=provider_base_url,
         path="/youtube/transcript",
@@ -403,7 +462,14 @@ def fetch_video_transcript(
         retries=retries,
         backoff_base_s=backoff_base_s,
     )
-    return _extract_text(payload)
+    transcript = _extract_text(payload)
+    LOGGER.info(
+        "Fetched transcript for YouTube video: video_id=%s chars=%d has_content=%s",
+        video_id,
+        len(transcript),
+        bool(transcript),
+    )
+    return transcript
 
 
 def poll_channel_videos(
@@ -414,6 +480,8 @@ def poll_channel_videos(
 ) -> tuple[list[YouTubeRecord], int, Exception | None]:
     """Poll latest videos and fetch transcripts; returns records + missing transcript count."""
 
+    LOGGER.info("Starting YouTube channel poll: channel=%s channel_id=%s", channel.name, channel.channel_id)
+
     try:
         videos = fetch_channel_latest_videos(channel, api_key=api_key, provider_base_url=provider_base_url)
     except Exception as exc:  # pragma: no cover - defensive path
@@ -422,6 +490,13 @@ def poll_channel_videos(
 
     records: list[YouTubeRecord] = []
     missing_transcripts = 0
+
+    LOGGER.info(
+        "YouTube channel poll fetched candidate videos: channel=%s channel_id=%s count=%d",
+        channel.name,
+        channel.channel_id,
+        len(videos),
+    )
 
     for video in videos:
         video_id = str(video.get("video_id") or video.get("id") or "").strip()
@@ -445,6 +520,14 @@ def poll_channel_videos(
             missing_transcripts += 1
 
         records.append(_to_record(video, channel=channel, transcript=transcript))
+
+    LOGGER.info(
+        "Completed YouTube channel poll: channel=%s channel_id=%s records=%d missing_transcripts=%d",
+        channel.name,
+        channel.channel_id,
+        len(records),
+        missing_transcripts,
+    )
 
     return sorted(records, key=lambda record: (record.channel_id, record.video_id, record.title)), missing_transcripts, None
 
@@ -474,11 +557,18 @@ def fetch_all_channels(
     default_base_url = "https://transcriptapi.com/api/v2"
     configured_base_url = provider_base_url or os.getenv("TRANSCRIPT_API_BASE_URL", default_base_url)
 
+    channels = list(channel_configs)
+    LOGGER.info(
+        "Starting YouTube ingestion: channels=%d base_url=%s",
+        len(channels),
+        configured_base_url,
+    )
+
     records: list[YouTubeRecord] = []
     failed_channels = 0
     missing_transcripts = 0
 
-    for channel in channel_configs:
+    for channel in channels:
         channel_records, channel_missing, error = poll_channel_videos(
             channel,
             api_key=api_key,
@@ -498,8 +588,23 @@ def fetch_all_channels(
                 provider_base_url=default_base_url,
             )
 
+        LOGGER.info(
+            "YouTube ingestion channel summary: channel=%s channel_id=%s records=%d missing_transcripts=%d failed=%s",
+            channel.name,
+            channel.channel_id,
+            len(channel_records),
+            channel_missing,
+            bool(error),
+        )
+
         failed_channels += int(error is not None)
         missing_transcripts += channel_missing
         records.extend(channel_records)
 
+    LOGGER.info(
+        "Completed YouTube ingestion: total_records=%d failed_channels=%d missing_transcripts=%d",
+        len(records),
+        failed_channels,
+        missing_transcripts,
+    )
     return sorted(records, key=lambda record: (record.channel_id, record.video_id, record.title)), failed_channels, missing_transcripts

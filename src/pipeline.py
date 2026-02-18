@@ -32,7 +32,8 @@ from .verification.scoring import score_claim_results
 
 LOGGER = logging.getLogger("research.pipeline")
 if not LOGGER.handlers:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    configured_level = os.getenv("RESEARCH_LOG_LEVEL", "INFO").strip().upper() or "INFO"
+    logging.basicConfig(level=getattr(logging, configured_level, logging.INFO), format="%(message)s")
 
 
 EMBEDDING_COST_PER_MILLION_TOKENS_USD = float(os.getenv("EMBEDDING_COST_PER_MILLION_TOKENS_USD", "0.02"))
