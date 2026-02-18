@@ -821,11 +821,17 @@ def run_delivery(*, pipeline_run_id: str | None = None, dry_run: bool | None = N
     github_token = os.getenv("GITHUB_TOKEN", "")
     github_owner = os.getenv("GITHUB_OWNER", "")
     github_repo = os.getenv("GITHUB_REPO", "")
+    if not github_owner or not github_repo:
+        _repo_full = os.getenv("GITHUB_REPOSITORY", "")
+        if "/" in _repo_full:
+            _derived_owner, _derived_repo = _repo_full.split("/", 1)
+            github_owner = github_owner or _derived_owner
+            github_repo = github_repo or _derived_repo
     github_branch = os.getenv("GITHUB_DEFAULT_BRANCH", "main")
     dry_run = dry_run if dry_run is not None else os.getenv("DELIVERY_DRY_RUN", "false").lower() == "true"
 
     if github_token == "" or github_owner == "" or github_repo == "":
-        raise ValueError("GITHUB_TOKEN, GITHUB_OWNER, and GITHUB_REPO are required for delivery stage")
+        raise ValueError("GITHUB_TOKEN and GITHUB_REPOSITORY (or GITHUB_OWNER + GITHUB_REPO) are required for delivery stage")
 
     import psycopg
 

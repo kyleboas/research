@@ -69,6 +69,35 @@ def _get_env(name: str, *, default: str | None = None, required: bool = False) -
     return value
 
 
+def _parse_github_repository() -> tuple[str, str]:
+    """Split the GITHUB_REPOSITORY env var (owner/repo) into its two parts."""
+    repo_full = os.getenv("GITHUB_REPOSITORY", "")
+    if "/" in repo_full:
+        owner, repo = repo_full.split("/", 1)
+        return owner, repo
+    return "", ""
+
+
+def _get_github_owner() -> str:
+    value = os.getenv("GITHUB_OWNER", "")
+    if value:
+        return value
+    owner, _ = _parse_github_repository()
+    if not owner:
+        raise ValueError("Missing required environment variable: GITHUB_OWNER (or GITHUB_REPOSITORY)")
+    return owner
+
+
+def _get_github_repo() -> str:
+    value = os.getenv("GITHUB_REPO", "")
+    if value:
+        return value
+    _, repo = _parse_github_repository()
+    if not repo:
+        raise ValueError("Missing required environment variable: GITHUB_REPO (or GITHUB_REPOSITORY)")
+    return repo
+
+
 @lru_cache(maxsize=1)
 def load_settings() -> Settings:
     """Load and cache Settings from environment variables.
@@ -93,7 +122,7 @@ def load_settings() -> Settings:
         openai_embedding_model=_get_env("OPENAI_EMBEDDING_MODEL", default=_md("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large")),
         transcript_api_key=_get_env("TRANSCRIPT_API_KEY", required=True),
         github_token=_get_env("GITHUB_TOKEN", required=True),
-        github_owner=_get_env("GITHUB_OWNER", required=True),
-        github_repo=_get_env("GITHUB_REPO", required=True),
+        github_owner=_get_github_owner(),
+        github_repo=_get_github_repo(),
         github_default_branch=_get_env("GITHUB_DEFAULT_BRANCH", default="main"),
     )
