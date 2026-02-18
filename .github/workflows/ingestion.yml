@@ -16,8 +16,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       TRANSCRIPT_API_KEY: ${{ secrets.TRANSCRIPT_API_KEY }}
       GITHUB_TOKEN: ${{ secrets.DELIVERY_GITHUB_TOKEN }}
-      GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
-      GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
+      GITHUB_OWNER: ${{ github.repository_owner }}
+      GITHUB_REPO: ${{ github.event.repository.name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -47,8 +47,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       TRANSCRIPT_API_KEY: ${{ secrets.TRANSCRIPT_API_KEY }}
       GITHUB_TOKEN: ${{ secrets.DELIVERY_GITHUB_TOKEN }}
-      GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
-      GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
+      GITHUB_OWNER: ${{ github.repository_owner }}
+      GITHUB_REPO: ${{ github.event.repository.name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

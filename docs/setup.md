@@ -41,8 +41,6 @@ Add each of the following:
 | `OPENAI_API_KEY` | Your OpenAI API key |
 | `TRANSCRIPT_API_KEY` | Your transcript provider key |
 | `DELIVERY_GITHUB_TOKEN` | A GitHub personal access token with repo write access |
-| `GITHUB_OWNER` | Your GitHub username or org name |
-| `GITHUB_REPO` | This repository name |
 | `RSS_FEEDS` | e.g. `OpenAI Blog\|https://openai.com/blog/rss.xml,Anthropic News\|https://www.anthropic.com/news/rss.xml` |
 | `YOUTUBE_CHANNELS` | e.g. `OpenAI\|UCXZCJLdBC09xxGZ6gcdrc6A` |
 | `REPORT_TOPIC` | e.g. `Weekly AI research roundup` |
@@ -76,4 +74,4 @@ The pipeline runs automatically every Monday at noon UTC. You can also trigger i
 - **`Missing required environment variable`**: A secret is missing or misspelled in step 2.
 - **Database errors**: Verify the SQL files ran without errors in the Supabase SQL Editor and that `POSTGRES_DSN` is correct.
 - **No ingestion records**: Check the formatting of `RSS_FEEDS` and `YOUTUBE_CHANNELS` — use `Name|url` pairs separated by commas.
-- **Delivery not publishing**: Confirm `DELIVERY_GITHUB_TOKEN` has write access to the repo and `GITHUB_OWNER`/`GITHUB_REPO` are correct.
+- **Delivery not publishing**: Confirm `DELIVERY_GITHUB_TOKEN` has write access to the repo.

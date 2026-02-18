@@ -88,8 +88,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       TRANSCRIPT_API_KEY: ${{ secrets.TRANSCRIPT_API_KEY }}
       GITHUB_TOKEN: ${{ secrets.DELIVERY_GITHUB_TOKEN }}
-      GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
-      GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
+      GITHUB_OWNER: ${{ github.repository_owner }}
+      GITHUB_REPO: ${{ github.event.repository.name }}
       REPORT_TOPIC: ${{ secrets.REPORT_TOPIC }}
     steps:
       - uses: actions/checkout@v4
@@ -124,8 +124,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       TRANSCRIPT_API_KEY: ${{ secrets.TRANSCRIPT_API_KEY }}
       GITHUB_TOKEN: ${{ secrets.DELIVERY_GITHUB_TOKEN }}
-      GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
-      GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
+      GITHUB_OWNER: ${{ github.repository_owner }}
+      GITHUB_REPO: ${{ github.event.repository.name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -157,8 +157,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       TRANSCRIPT_API_KEY: ${{ secrets.TRANSCRIPT_API_KEY }}
       GITHUB_TOKEN: ${{ secrets.DELIVERY_GITHUB_TOKEN }}
-      GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
-      GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
+      GITHUB_OWNER: ${{ github.repository_owner }}
+      GITHUB_REPO: ${{ github.event.repository.name }}
       DELIVERY_EMAIL_ENABLED: ${{ secrets.DELIVERY_EMAIL_ENABLED }}
       DELIVERY_EMAIL_API_KEY: ${{ secrets.DELIVERY_EMAIL_API_KEY }}
       DELIVERY_EMAIL_FROM: ${{ secrets.DELIVERY_EMAIL_FROM }}
