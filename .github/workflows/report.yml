@@ -1,4 +1,4 @@
-name: Weekly Report Pipeline
+name: Report
 
 on:
   schedule:
