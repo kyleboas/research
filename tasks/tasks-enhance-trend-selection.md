@@ -63,20 +63,20 @@ Update the file after completing each sub-task, not just after completing an ent
 
 > **Goal:** Refactor the SQL query and source formatting. Self-contained, no interaction with LLM call or validation logic. Can be tested independently.
 
-- [ ] 3.0 Refactor source-list building (snippet sizing, labels, relative age, activity summary)
-  - [ ] 3.1 Update the SQL query in `run_trend_pass()` to also `SELECT source_type, created_at` alongside `title`, `metadata ->> 'content'`, and `published_at`.
-  - [ ] 3.2 Add module-level constants: `_LONG_SNIPPET_CHARS = 800`, `_LONG_SNIPPET_TOP_N = 10`, keep existing `_CONTENT_SNIPPET_CHARS = 300`.
-  - [ ] 3.3 Write `_relative_age(dt: datetime, now: datetime) -> str` that returns a human-readable string like `"2 days ago"` or `"today"`.
-  - [ ] 3.4 Write `_source_type_label(source_type: str) -> str` that returns `"[TRANSCRIPT]"` for `source_type == "youtube"` and `"[ARTICLE]"` for everything else.
-  - [ ] 3.5 Write `_build_sources_summary(rows: list, now: datetime) -> str` that: sorts rows by `(published_at or created_at) DESC`, assigns 800-char snippets to the top 10 and 300-char snippets to the rest, and formats each line as `[LABEL | N days ago] Title: <snippet>`.
-  - [ ] 3.6 Write `_build_source_activity_summary(rows: list, now: datetime, lookback_days: int) -> str` that groups rows into two time buckets ("last 2 days" and "3–N days ago"), counts articles vs. transcripts in each bucket, and returns the formatted summary block (see PRD Section 4.8 / 6 for format).
-  - [ ] 3.7 Replace the inline source-formatting loop in `run_trend_pass()` with calls to `_build_sources_summary()` and `_build_source_activity_summary()`.
+- [x] 3.0 Refactor source-list building (snippet sizing, labels, relative age, activity summary)
+  - [x] 3.1 Update the SQL query in `run_trend_pass()` to also `SELECT source_type, created_at` alongside `title`, `metadata ->> 'content'`, and `published_at`.
+  - [x] 3.2 Add module-level constants: `_LONG_SNIPPET_CHARS = 800`, `_LONG_SNIPPET_TOP_N = 10`, keep existing `_CONTENT_SNIPPET_CHARS = 300`.
+  - [x] 3.3 Write `_relative_age(dt: datetime, now: datetime) -> str` that returns a human-readable string like `"2 days ago"` or `"today"`.
+  - [x] 3.4 Write `_source_type_label(source_type: str) -> str` that returns `"[TRANSCRIPT]"` for `source_type == "youtube"` and `"[ARTICLE]"` for everything else.
+  - [x] 3.5 Write `_build_sources_summary(rows: list, now: datetime) -> str` that: sorts rows by `(published_at or created_at) DESC`, assigns 800-char snippets to the top 10 and 300-char snippets to the rest, and formats each line as `[LABEL | N days ago] Title: <snippet>`.
+  - [x] 3.6 Write `_build_source_activity_summary(rows: list, now: datetime, lookback_days: int) -> str` that groups rows into two time buckets ("last 2 days" and "3–N days ago"), counts articles vs. transcripts in each bucket, and returns the formatted summary block (see PRD Section 4.8 / 6 for format).
+  - [x] 3.7 Replace the inline source-formatting loop in `run_trend_pass()` with calls to `_build_sources_summary()` and `_build_source_activity_summary()`.
 
-- [ ] 4.0 Implement adaptive lookback window
-  - [ ] 4.1 Extract the source-querying SQL into `_query_sources(connection, lookback_days: int) -> list` so it can be called with different window sizes.
-  - [ ] 4.2 Add constant `_MIN_SOURCES_THRESHOLD = 10` in `trend_pass.py`.
-  - [ ] 4.3 In `run_trend_pass()`, after calling `_query_sources(connection, lookback_days)`, check `len(rows) < _MIN_SOURCES_THRESHOLD`; if so, re-query with `lookback_days * 2` (i.e., 14 days when default is 7) and log an info message.
-  - [ ] 4.4 Track the actual `lookback_days` used (7 or 14) and include it in the returned `TrendPassResult.lookback_days` field.
+- [x] 4.0 Implement adaptive lookback window
+  - [x] 4.1 Extract the source-querying SQL into `_query_sources(connection, lookback_days: int) -> list` so it can be called with different window sizes.
+  - [x] 4.2 Add constant `_MIN_SOURCES_THRESHOLD = 10` in `trend_pass.py`.
+  - [x] 4.3 In `run_trend_pass()`, after calling `_query_sources(connection, lookback_days)`, check `len(rows) < _MIN_SOURCES_THRESHOLD`; if so, re-query with `lookback_days * 2` (i.e., 14 days when default is 7) and log an info message.
+  - [x] 4.4 Track the actual `lookback_days` used (7 or 14) and include it in the returned `TrendPassResult.lookback_days` field.
 
 ---
 

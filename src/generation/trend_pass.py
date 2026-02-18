@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
+from datetime import datetime
 from dataclasses import dataclass
-from datetime import timedelta
 
 from anthropic import Anthropic
 
@@ -15,9 +16,14 @@ _FALLBACK_TOPIC = "emerging football tactical trends"
 
 # Maximum characters of content to include per source in the summary sent to the LLM.
 _CONTENT_SNIPPET_CHARS = 300
+_LONG_SNIPPET_CHARS = 800
+_LONG_SNIPPET_TOP_N = 10
 
 # Maximum number of sources to include in the trend discovery prompt.
 _MAX_SOURCES = 60
+_MIN_SOURCES_THRESHOLD = 10
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -83,21 +89,11 @@ def _parse_trend_candidates(raw: str) -> list[TrendCandidate]:
     return candidates
 
 
-def run_trend_pass(
-    connection: object,
-    *,
-    settings: Settings,
-    lookback_days: int = 7,
-) -> str:
-    """Scan recent ingested sources and ask the LLM to identify the top emerging football trend.
-
-    Returns a concise topic phrase suitable for use as the report topic.
-    Falls back to a generic topic string if no recent sources are found.
-    """
+def _query_sources(connection: object, lookback_days: int) -> list[tuple]:
     with connection.cursor() as cursor:
         cursor.execute(
             """
-            SELECT title, metadata ->> 'content'
+            SELECT title, metadata ->> 'content', source_type, created_at, published_at
             FROM sources
             WHERE published_at >= NOW() - %s::interval
                OR (published_at IS NULL AND created_at >= NOW() - %s::interval)
@@ -106,28 +102,120 @@ def run_trend_pass(
             """,
             (f"{lookback_days} days", f"{lookback_days} days", _MAX_SOURCES),
         )
-        rows = cursor.fetchall()
+        return cursor.fetchall()
 
+
+def _relative_age(dt: datetime, now: datetime) -> str:
+    age_days = max((now.date() - dt.date()).days, 0)
+    if age_days == 0:
+        return "today"
+    if age_days == 1:
+        return "1 day ago"
+    return f"{age_days} days ago"
+
+
+def _source_type_label(source_type: str | None) -> str:
+    return "[TRANSCRIPT]" if source_type == "youtube" else "[ARTICLE]"
+
+
+def _build_sources_summary(rows: list[tuple], now: datetime) -> str:
     if not rows:
-        return _FALLBACK_TOPIC
+        return ""
+
+    sorted_rows = sorted(
+        rows,
+        key=lambda row: row[4] or row[3],
+        reverse=True,
+    )
 
     lines: list[str] = []
-    for title, content in rows:
-        snippet = (content or "").strip()[:_CONTENT_SNIPPET_CHARS]
-        if title:
-            entry = f"- {title}"
-            if snippet:
-                entry += f": {snippet}"
-            lines.append(entry)
+    for index, (title, content, source_type, created_at, published_at) in enumerate(sorted_rows):
+        snippet_size = _LONG_SNIPPET_CHARS if index < _LONG_SNIPPET_TOP_N else _CONTENT_SNIPPET_CHARS
+        snippet = (content or "").strip()[:snippet_size]
+        if not title and not snippet:
+            continue
 
-    if not lines:
-        return _FALLBACK_TOPIC
+        observed_at = published_at or created_at
+        if observed_at is None:
+            continue
 
-    sources_summary = "\n".join(lines)
+        label = _source_type_label(source_type)
+        age = _relative_age(observed_at, now)
+        source_title = title or "Untitled"
+        line = f"- [{label.strip('[]')} | {age}] {source_title}"
+        if snippet:
+            line += f": {snippet}"
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
+def _build_source_activity_summary(rows: list[tuple], now: datetime, lookback_days: int) -> str:
+    last_2_articles = 0
+    last_2_transcripts = 0
+    prior_articles = 0
+    prior_transcripts = 0
+
+    for _, _, source_type, created_at, published_at in rows:
+        observed_at = published_at or created_at
+        if observed_at is None:
+            continue
+
+        age_days = max((now.date() - observed_at.date()).days, 0)
+        is_transcript = source_type == "youtube"
+        if age_days <= 1:
+            if is_transcript:
+                last_2_transcripts += 1
+            else:
+                last_2_articles += 1
+        else:
+            if is_transcript:
+                prior_transcripts += 1
+            else:
+                prior_articles += 1
+
+    return (
+        f"last 2 days — articles: {last_2_articles}, transcripts: {last_2_transcripts}\n"
+        f"3–{lookback_days} days ago — articles: {prior_articles}, transcripts: {prior_transcripts}"
+    )
+
+
+def run_trend_pass(
+    connection: object,
+    *,
+    settings: Settings,
+    lookback_days: int = 7,
+) -> TrendPassResult:
+    """Scan recent ingested sources and ask the LLM to identify the top emerging football trend.
+
+    Returns a concise topic phrase plus trend metadata for downstream logging.
+    Falls back to a generic topic payload if no recent sources are found.
+    """
+    actual_lookback_days = lookback_days
+    rows = _query_sources(connection, lookback_days)
+    if len(rows) < _MIN_SOURCES_THRESHOLD:
+        actual_lookback_days = lookback_days * 2
+        logger.info(
+            "Trend pass found only %s sources in %s-day window; retrying with %s-day window",
+            len(rows),
+            lookback_days,
+            actual_lookback_days,
+        )
+        rows = _query_sources(connection, actual_lookback_days)
+
+    if not rows:
+        return TrendPassResult(topic=_FALLBACK_TOPIC, candidates=[], lookback_days=actual_lookback_days, dedup_max_similarity=None)
+
+    now = datetime.now()
+    sources_summary = _build_sources_summary(rows, now)
+    if not sources_summary:
+        return TrendPassResult(topic=_FALLBACK_TOPIC, candidates=[], lookback_days=actual_lookback_days, dedup_max_similarity=None)
+    source_activity_summary = _build_source_activity_summary(rows, now, actual_lookback_days)
+
     system_prompt, user_prompt = build_trend_prompt(
         sources_summary=sources_summary,
         recent_topics_block="None",
-        source_activity_summary="Not provided",
+        source_activity_summary=source_activity_summary,
     )
 
     client = Anthropic(api_key=settings.anthropic_api_key)
@@ -142,4 +230,9 @@ def run_trend_pass(
         block.text for block in response.content if getattr(block, "type", "") == "text"
     ).strip()
 
-    return topic or _FALLBACK_TOPIC
+    return TrendPassResult(
+        topic=topic or _FALLBACK_TOPIC,
+        candidates=[],
+        lookback_days=actual_lookback_days,
+        dedup_max_similarity=None,
+    )

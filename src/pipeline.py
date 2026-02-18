@@ -23,7 +23,7 @@ from .generation.critique_pass import run_critique_pass
 from .generation.draft_pass import run_draft_pass
 from .generation.research_pass import run_research_pass
 from .generation.revision_pass import run_revision_pass
-from .generation.trend_pass import run_trend_pass
+from .generation.trend_pass import TrendPassResult, run_trend_pass
 from .processing.chunking import chunk_text
 from .processing.embeddings import embed_chunks, upsert_embeddings
 from .verification.claims import extract_claims
@@ -592,7 +592,11 @@ def run_generation(
     with psycopg.connect(settings.postgres_dsn) as connection:
         if topic is None:
             trend_start = time.perf_counter()
-            topic = run_trend_pass(connection, settings=settings)
+            trend_result = run_trend_pass(connection, settings=settings)
+            if isinstance(trend_result, TrendPassResult):
+                topic = trend_result.topic
+            else:
+                topic = trend_result
             trend_elapsed = time.perf_counter() - trend_start
             _log_event(
                 pipeline_run_id=pipeline_run_id,
