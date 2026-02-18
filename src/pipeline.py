@@ -255,25 +255,26 @@ def run_ingestion(*, pipeline_run_id: str | None = None) -> str:
     feed_configs = load_feed_configs_from_env()
     youtube_channels = load_youtube_channel_configs_from_env()
 
-    rss_records, failed_feeds = fetch_all_feeds(feed_configs)
     youtube_records, failed_channels, missing_transcripts = fetch_all_channels(
         youtube_channels,
         api_key=settings.transcript_api_key,
     )
 
+    # NewsBlur is the default RSS ingestion path.  When credentials are present
+    # it replaces direct feed fetching; otherwise fall back to direct RSS.
     newsblur_config = load_newsblur_config_from_env()
-    newsblur_records: list = []
     failed_newsblur = 0
     if newsblur_config is not None:
-        newsblur_records, nb_error = fetch_newsblur_records(newsblur_config)
+        rss_records, nb_error = fetch_newsblur_records(newsblur_config)
         failed_newsblur = int(nb_error is not None)
-
-    all_rss_records = [*rss_records, *newsblur_records]
+        failed_feeds = 0
+    else:
+        rss_records, failed_feeds = fetch_all_feeds(feed_configs)
 
     import psycopg
 
     with psycopg.connect(settings.postgres_dsn) as connection:
-        deduped_rss = filter_existing_records(connection, all_rss_records)
+        deduped_rss = filter_existing_records(connection, rss_records)
         deduped_youtube = filter_existing_youtube_records(connection, youtube_records)
         inserted = _insert_sources(connection, [*deduped_rss.new_records, *deduped_youtube.new_records])
         _persist_stage_cost_metrics(
@@ -294,8 +295,8 @@ def run_ingestion(*, pipeline_run_id: str | None = None) -> str:
         stage="ingestion",
         event="complete",
         elapsed_s=elapsed,
+        rss_source="newsblur" if newsblur_config is not None else "direct",
         fetched_rss=len(rss_records),
-        fetched_newsblur=len(newsblur_records),
         fetched_youtube=len(youtube_records),
         deduped_rss=len(deduped_rss.duplicate_records),
         deduped_youtube=len(deduped_youtube.duplicate_records),
