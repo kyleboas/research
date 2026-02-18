@@ -34,7 +34,7 @@ class NewsBlurConfig:
     retries: int = 2
     backoff_base_s: float = 1.0
     latest_limit: int = 50
-    fetch_original_text: bool = False
+    fetch_original_text: bool = True
 
 
 class NewsBlurClient:
@@ -276,5 +276,5 @@ def load_newsblur_config_from_env() -> NewsBlurConfig | None:
         retries=int(os.getenv("NEWSBLUR_RETRIES", "2")),
         backoff_base_s=float(os.getenv("NEWSBLUR_BACKOFF_BASE_S", "1.0")),
         latest_limit=int(os.getenv("NEWSBLUR_LATEST_LIMIT", "50")),
-        fetch_original_text=os.getenv("NEWSBLUR_FETCH_ORIGINAL_TEXT", "false").lower() in ("1", "true", "yes"),
+        fetch_original_text=os.getenv("NEWSBLUR_FETCH_ORIGINAL_TEXT", "true").lower() not in ("0", "false", "no"),
     )

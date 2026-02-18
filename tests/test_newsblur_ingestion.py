@@ -69,7 +69,7 @@ def test_load_newsblur_config_defaults(monkeypatch):
     assert config.retries == 2
     assert config.backoff_base_s == 1.0
     assert config.latest_limit == 50
-    assert config.fetch_original_text is False
+    assert config.fetch_original_text is True
 
 
 # ---------------------------------------------------------------------------
