@@ -74,17 +74,9 @@
   - Feed: https://www.creativesetplays.com/blog-feed.xml
   - Site: https://www.creativesetplays.com/articles
 
-- **Double-Pivots**
-  - Feed: https://doublepivots.wordpress.com/feed/
-  - Site: https://doublepivots.wordpress.com/
-
 - **Dribbles and Nutmegs**
   - Feed: https://dribblesandnutmegs.substack.com/feed
   - Site: https://dribblesandnutmegs.substack.com
-
-- **Fab**
-  - Feed: https://redfab.medium.com/feed
-  - Site: https://medium.com/@redfab?source=rss-b2683c8c6c6a------2
 
 - **Football Bunseki**
   - Feed: https://footballbunsekicom.com/feed/
@@ -149,10 +141,6 @@
 - **Luukas's Substack**
   - Feed: https://luukasojala.substack.com/feed
   - Site: https://luukasojala.substack.com
-
-- **Mark Carey - The Athletic**
-  - Feed: https://www.nytimes.com/athletic/rss/author/mark-carey/
-  - Site: https://www.nytimes.com/athletic/author/mark-carey/
 
 - **Martin JUILLIARD**
   - Feed: https://medium.com/@mjuilliard/feed

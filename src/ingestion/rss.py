@@ -13,6 +13,7 @@ import re
 import time
 from typing import Iterable
 from urllib.parse import urlparse
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
@@ -89,6 +90,13 @@ def _fetch_feed_document(config: FeedConfig) -> bytes:
             request = Request(config.url, headers={"User-Agent": "Feedly/1.0 (+http://www.feedly.com/fetcher.html)"})
             with urlopen(request, timeout=config.timeout_s) as response:  # noqa: S310
                 return response.read()
+        except HTTPError as exc:  # 4xx errors are definitive; do not retry
+            if 400 <= exc.code < 500:
+                raise
+            last_error = exc
+            if attempt >= config.retries:
+                break
+            time.sleep(config.backoff_base_s * (2**attempt))
         except Exception as exc:  # broad by design for network and parser errors
             last_error = exc
             if attempt >= config.retries:
