@@ -39,22 +39,23 @@ Update the file after completing each sub-task, not just after completing an ent
 
 > **Goal:** Define the dataclasses, prompt templates, and JSON parser that everything else depends on. Small, verifiable, no runtime dependencies.
 
-- [ ] 0.0 Create feature branch
-  - [ ] 0.1 Confirm the working branch is correct (`git branch --show-current`)
-  - [ ] 0.2 Run `grep -rn "run_trend_pass\|from.*trend_pass" src/ tests/ scripts/ --include="*.py"` to confirm all call sites for the return type change. Record the results here before proceeding.
+- [x] 0.0 Create feature branch
+  - [x] 0.1 Confirm the working branch is correct (`git branch --show-current`)
+  - [x] 0.2 Run `grep -rn "run_trend_pass\|from.*trend_pass" src/ tests/ scripts/ --include="*.py"` to confirm all call sites for the return type change. Record the results here before proceeding.
+    - Result recorded 2026-02-18: `src/pipeline.py:26`, `src/pipeline.py:595`, `src/generation/trend_pass.py:21` (note: command emitted `grep: scripts/: No such file or directory`).
 
-- [ ] 1.0 Define TrendCandidate, TrendPassResult, TrendPassError, and JSON parser
-  - [ ] 1.1 Define `TrendCandidate` dataclass in `trend_pass.py` with fields `rank: int`, `topic: str`, `justification: str`, `source_count: int`.
-  - [ ] 1.2 Define `TrendPassResult` dataclass with fields `topic: str`, `candidates: list[TrendCandidate]`, `lookback_days: int`, `dedup_max_similarity: float | None`.
-  - [ ] 1.3 Define `TrendPassError(Exception)` in `trend_pass.py` with a `candidates_tried: list[dict]` field. Each dict contains the candidate topic, rejection reason (e.g. "validation_failed", "dedup_exact", "dedup_semantic", "reprompt_failed"), and the highest similarity score if applicable.
-  - [ ] 1.4 Write `_parse_trend_candidates(raw: str) -> list[TrendCandidate]` that calls `json.loads()`, validates the structure (list of dicts with `rank`, `topic`, `justification`, `source_count`), and returns an empty list on any parse or validation error. Must also return an empty list if fewer than 2 candidates are returned (PRD 4.1 requirement 5).
+- [x] 1.0 Define TrendCandidate, TrendPassResult, TrendPassError, and JSON parser
+  - [x] 1.1 Define `TrendCandidate` dataclass in `trend_pass.py` with fields `rank: int`, `topic: str`, `justification: str`, `source_count: int`.
+  - [x] 1.2 Define `TrendPassResult` dataclass with fields `topic: str`, `candidates: list[TrendCandidate]`, `lookback_days: int`, `dedup_max_similarity: float | None`.
+  - [x] 1.3 Define `TrendPassError(Exception)` in `trend_pass.py` with a `candidates_tried: list[dict]` field. Each dict contains the candidate topic, rejection reason (e.g. "validation_failed", "dedup_exact", "dedup_semantic", "reprompt_failed"), and the highest similarity score if applicable.
+  - [x] 1.4 Write `_parse_trend_candidates(raw: str) -> list[TrendCandidate]` that calls `json.loads()`, validates the structure (list of dicts with `rank`, `topic`, `justification`, `source_count`), and returns an empty list on any parse or validation error. Must also return an empty list if fewer than 2 candidates are returned (PRD 4.1 requirement 5).
 
-- [ ] 2.0 Update prompt templates for ranked-candidate output with early-signal ranking
-  - [ ] 2.1 Replace `TREND_USER_TEMPLATE` in `prompts.py` to request a JSON array of 3–5 objects, each with keys `rank` (int), `topic` (10–20 word phrase), `justification` (≤ 25 words), and `source_count` (int). Include a `{recent_topics_block}` placeholder so historical topics can be injected. Include a `{source_activity_summary}` placeholder for the time-bucket counts.
-  - [ ] 2.2 Add a `## Ranking criteria` section to the template that instructs the model to weight candidates by: (a) velocity — mentions accelerating in the last 2 days vs. prior 5 days, (b) cross-source convergence — appearing in both `[ARTICLE]` and `[TRANSCRIPT]` sources, (c) first-appearance recency — earliest mention within the last 48 hours. Instruct the model to rank lower any topic discussed at a flat rate across the entire window.
-  - [ ] 2.3 Add `TREND_REPROMPT_USER_TEMPLATE` — a short follow-up prompt that shows the rejected phrase and asks for a more specific 10–20 word replacement, returning plain text (not JSON). Note: re-prompt responses skip `_parse_trend_candidates()` and go directly through `_validate_topic()`.
-  - [ ] 2.4 Update `build_trend_prompt(*, sources_summary, recent_topics_block, source_activity_summary)` to accept and format all three placeholders.
-  - [ ] 2.5 Add `build_trend_reprompt(*, rejected_phrase)` that formats `TREND_REPROMPT_USER_TEMPLATE`.
+- [x] 2.0 Update prompt templates for ranked-candidate output with early-signal ranking
+  - [x] 2.1 Replace `TREND_USER_TEMPLATE` in `prompts.py` to request a JSON array of 3–5 objects, each with keys `rank` (int), `topic` (10–20 word phrase), `justification` (≤ 25 words), and `source_count` (int). Include a `{recent_topics_block}` placeholder so historical topics can be injected. Include a `{source_activity_summary}` placeholder for the time-bucket counts.
+  - [x] 2.2 Add a `## Ranking criteria` section to the template that instructs the model to weight candidates by: (a) velocity — mentions accelerating in the last 2 days vs. prior 5 days, (b) cross-source convergence — appearing in both `[ARTICLE]` and `[TRANSCRIPT]` sources, (c) first-appearance recency — earliest mention within the last 48 hours. Instruct the model to rank lower any topic discussed at a flat rate across the entire window.
+  - [x] 2.3 Add `TREND_REPROMPT_USER_TEMPLATE` — a short follow-up prompt that shows the rejected phrase and asks for a more specific 10–20 word replacement, returning plain text (not JSON). Note: re-prompt responses skip `_parse_trend_candidates()` and go directly through `_validate_topic()`.
+  - [x] 2.4 Update `build_trend_prompt(*, sources_summary, recent_topics_block, source_activity_summary)` to accept and format all three placeholders.
+  - [x] 2.5 Add `build_trend_reprompt(*, rejected_phrase)` that formats `TREND_REPROMPT_USER_TEMPLATE`.
 
 ---
 

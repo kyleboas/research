@@ -61,19 +61,50 @@ TREND_SYSTEM: Final[str] = (
 )
 
 TREND_USER_TEMPLATE: Final[str] = (
-    "Here are titles and excerpts from recent football articles and content:\n\n"
+    "Here are titles and excerpts from recent football articles and transcripts:\n\n"
     "{sources_summary}\n\n"
-    "Based on this content, identify the single most significant **emerging trend** in football that:\n"
-    "1. Appears across multiple sources (not a one-off story)\n"
-    "2. Is gaining traction but has not yet become mainstream\n"
-    "3. Has tactical, strategic, or analytical significance\n\n"
-    "Return ONLY a concise topic phrase (10-20 words) that captures this trend. "
-    "Do not include explanations, bullet points, or any other text — just the topic phrase."
+    "Recent topic history to avoid repeating:\n"
+    "{recent_topics_block}\n\n"
+    "Source activity summary:\n"
+    "{source_activity_summary}\n\n"
+    "Identify 3-5 emerging football trend candidates and return them as a JSON array.\n"
+    "Each array object must contain exactly these keys:\n"
+    '- `rank` (int)\n'
+    '- `topic` (10-20 word phrase)\n'
+    '- `justification` (25 words max)\n'
+    '- `source_count` (int)\n\n'
+    "## Ranking criteria\n"
+    "Rank candidates by weighing:\n"
+    "1) Velocity: mentions accelerating in the last 2 days versus the prior 5 days.\n"
+    "2) Cross-source convergence: appears across both [ARTICLE] and [TRANSCRIPT] sources.\n"
+    "3) First-appearance recency: earliest appearance is within the last 48 hours.\n"
+    "Rank lower any topic discussed at a flat rate across the whole window.\n\n"
+    "Return only valid JSON; do not include markdown fences or additional prose."
+)
+
+TREND_REPROMPT_USER_TEMPLATE: Final[str] = (
+    "The previous topic phrase was rejected for being too broad or malformed:\n"
+    "\"{rejected_phrase}\"\n\n"
+    "Provide one more specific replacement topic phrase in 10-20 words.\n"
+    "Return plain text only."
 )
 
 
-def build_trend_prompt(*, sources_summary: str) -> tuple[str, str]:
-    return TREND_SYSTEM, TREND_USER_TEMPLATE.format(sources_summary=sources_summary)
+def build_trend_prompt(
+    *,
+    sources_summary: str,
+    recent_topics_block: str,
+    source_activity_summary: str,
+) -> tuple[str, str]:
+    return TREND_SYSTEM, TREND_USER_TEMPLATE.format(
+        sources_summary=sources_summary,
+        recent_topics_block=recent_topics_block,
+        source_activity_summary=source_activity_summary,
+    )
+
+
+def build_trend_reprompt(*, rejected_phrase: str) -> tuple[str, str]:
+    return TREND_SYSTEM, TREND_REPROMPT_USER_TEMPLATE.format(rejected_phrase=rejected_phrase)
 
 
 def build_research_prompt(topic: str) -> tuple[str, str]:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from datetime import timedelta
 
 from anthropic import Anthropic
@@ -16,6 +18,69 @@ _CONTENT_SNIPPET_CHARS = 300
 
 # Maximum number of sources to include in the trend discovery prompt.
 _MAX_SOURCES = 60
+
+
+@dataclass(slots=True)
+class TrendCandidate:
+    rank: int
+    topic: str
+    justification: str
+    source_count: int
+
+
+@dataclass(slots=True)
+class TrendPassResult:
+    topic: str
+    candidates: list[TrendCandidate]
+    lookback_days: int
+    dedup_max_similarity: float | None
+
+
+class TrendPassError(Exception):
+    def __init__(self, message: str, candidates_tried: list[dict]):
+        super().__init__(message)
+        self.candidates_tried = candidates_tried
+
+
+def _parse_trend_candidates(raw: str) -> list[TrendCandidate]:
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+    if not isinstance(payload, list) or len(payload) < 2:
+        return []
+
+    candidates: list[TrendCandidate] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            return []
+        if set(item) != {"rank", "topic", "justification", "source_count"}:
+            return []
+
+        rank = item.get("rank")
+        topic = item.get("topic")
+        justification = item.get("justification")
+        source_count = item.get("source_count")
+        if not isinstance(rank, int):
+            return []
+        if not isinstance(topic, str):
+            return []
+        if not isinstance(justification, str):
+            return []
+        if not isinstance(source_count, int):
+            return []
+
+        candidates.append(
+            TrendCandidate(
+                rank=rank,
+                topic=topic,
+                justification=justification,
+                source_count=source_count,
+            )
+        )
+
+    return candidates
 
 
 def run_trend_pass(
@@ -59,7 +124,11 @@ def run_trend_pass(
         return _FALLBACK_TOPIC
 
     sources_summary = "\n".join(lines)
-    system_prompt, user_prompt = build_trend_prompt(sources_summary=sources_summary)
+    system_prompt, user_prompt = build_trend_prompt(
+        sources_summary=sources_summary,
+        recent_topics_block="None",
+        source_activity_summary="Not provided",
+    )
 
     client = Anthropic(api_key=settings.anthropic_api_key)
     response = client.messages.create(
