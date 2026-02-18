@@ -48,6 +48,14 @@ Or run all stages in one command:
 python -m src.pipeline all --pipeline-run-id "$RUN_ID"
 ```
 
+## RSS troubleshooting
+
+Some feeds block specific bot user-agents and return `HTTP 403`. Configure `RSS_FEED_USER_AGENTS` to rotate through one or more values (separate with `||`) during ingestion retries.
+
+```bash
+RSS_FEED_USER_AGENTS="Mozilla/5.0 (...)||Feedly/1.0 (+http://www.feedly.com/fetcher.html)"
+```
+
 ## Testing
 
 ```bash
