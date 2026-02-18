@@ -193,7 +193,7 @@ def _http_json(
 
 
 def _extract_items(payload: dict[str, object]) -> list[dict[str, object]]:
-    for key in ("videos", "items", "data", "results"):
+    for key in ("results", "videos", "items", "data"):
         value = payload.get(key)
         if isinstance(value, list):
             return [item for item in value if isinstance(item, dict)]
@@ -410,10 +410,22 @@ def fetch_channel_latest_videos(
         backoff_base_s=channel.backoff_base_s,
     )
 
+    results = payload.get("results")
+    first_keys: list[str] | None = None
+    if isinstance(results, list) and results and isinstance(results[0], dict):
+        first_keys = list(results[0].keys())
+    LOGGER.info(
+        "TranscriptAPI latest keys=%s result_count=%s first_keys=%s",
+        list(payload.keys()),
+        payload.get("result_count"),
+        first_keys,
+    )
+
     videos: list[dict[str, object]] = []
     for item in _extract_items(payload):
-        video_id = str(item.get("video_id") or item.get("id") or "").strip()
-        url = str(item.get("url") or item.get("video_url") or "").strip()
+        video_id = str(item.get("video_id") or item.get("videoId") or item.get("id") or "").strip()
+        url = str(item.get("url") or item.get("video_url") or item.get("link") or "").strip()
+        published = str(item.get("published_at") or item.get("publishedAt") or item.get("published") or "").strip()
         if not video_id and url:
             video_id = _extract_video_id_from_url(url)
         if not url and video_id:
@@ -426,7 +438,7 @@ def fetch_channel_latest_videos(
                 "video_id": video_id,
                 "title": str(item.get("title") or "").strip(),
                 "url": url,
-                "published_at": str(item.get("published_at") or item.get("publishedAt") or "").strip(),
+                "published_at": published,
             }
         )
 

@@ -69,7 +69,32 @@ def test_fetch_channel_latest_videos_raises_when_provider_fails(monkeypatch) -> 
 
 
 def test_fetch_channel_latest_videos_accepts_results_key(monkeypatch) -> None:
-    payload = b'{"channel":{"id":"UC123"},"result_count":1,"results":[{"id":"abc123xyz00","title":"Match Analysis","url":"https://www.youtube.com/watch?v=abc123xyz00","publishedAt":"2026-01-01T12:00:00+00:00"}]}'
+    payload = b'{"channel":{"id":"UC123"},"result_count":1,"results":[{"videoId":"abc123xyz00","title":"Match Analysis","link":"https://www.youtube.com/watch?v=abc123xyz00","published":"2026-01-01T12:00:00+00:00"}]}'
+
+    def _fake_urlopen(request, timeout):
+        del request, timeout
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr("src.ingestion.youtube.urlopen", _fake_urlopen)
+
+    records = fetch_channel_latest_videos(
+        YouTubeChannelConfig(name="Test", channel_id="UC123", latest_limit=1),
+        api_key="api-key",
+        provider_base_url="https://transcriptapi.com/api/v2",
+    )
+
+    assert records == [
+        {
+            "video_id": "abc123xyz00",
+            "title": "Match Analysis",
+            "url": "https://www.youtube.com/watch?v=abc123xyz00",
+            "published_at": "2026-01-01T12:00:00+00:00",
+        }
+    ]
+
+
+def test_fetch_channel_latest_videos_builds_missing_url_from_video_id(monkeypatch) -> None:
+    payload = b'{"result_count":1,"results":[{"videoId":"abc123xyz00","title":"Match Analysis","published":"2026-01-01T12:00:00+00:00"}]}'
 
     def _fake_urlopen(request, timeout):
         del request, timeout
