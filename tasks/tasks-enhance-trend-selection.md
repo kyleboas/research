@@ -84,28 +84,28 @@ Update the file after completing each sub-task, not just after completing an ent
 
 > **Goal:** The hardest batch — the candidate selection loop, two-tier dedup, validation, re-prompt flow. These functions call each other, so they must be built together.
 
-- [ ] 5.0 Wire up the LLM call and return type
-  - [ ] 5.1 Raise `max_tokens` in the trend LLM call from `100` to `600` to accommodate 3–5 candidates with justifications.
-  - [ ] 5.2 Update `run_trend_pass()` to return `TrendPassResult` instead of `str`. On fallback (`_FALLBACK_TOPIC`), return `TrendPassResult(topic=_FALLBACK_TOPIC, candidates=[], lookback_days=<actual>, dedup_max_similarity=None)`. Fallback paths must return *before* the validation/dedup loop — `_FALLBACK_TOPIC` must never pass through `_validate_topic()`.
+- [x] 5.0 Wire up the LLM call and return type
+  - [x] 5.1 Raise `max_tokens` in the trend LLM call from `100` to `600` to accommodate 3–5 candidates with justifications.
+  - [x] 5.2 Update `run_trend_pass()` to return `TrendPassResult` instead of `str`. On fallback (`_FALLBACK_TOPIC`), return `TrendPassResult(topic=_FALLBACK_TOPIC, candidates=[], lookback_days=<actual>, dedup_max_similarity=None)`. Fallback paths must return *before* the validation/dedup loop — `_FALLBACK_TOPIC` must never pass through `_validate_topic()`.
 
-- [ ] 6.0 Implement historical topic deduplication (two-tier)
-  - [ ] 6.1 Add constant `_DEDUP_SIMILARITY_THRESHOLD = 0.85` in `trend_pass.py`.
-  - [ ] 6.2 Write `_fetch_recent_report_topics(connection, limit: int = 10) -> list[str]` that queries `reports` where `report_type = 'final'` ordered by `created_at DESC LIMIT <limit>` and returns the `title` column values (skipping NULLs).
-  - [ ] 6.3 Write `_normalise_text(text: str) -> str` that lowercases, strips punctuation (using `str.translate` or regex), and collapses whitespace. This is used for Tier 1 deduplication.
-  - [ ] 6.4 Write `_is_exact_duplicate(candidate: str, historical_topics: list[str]) -> bool` that normalises both sides and checks for exact equality against any historical topic. This is Tier 1 — zero cost.
-  - [ ] 6.5 Write `_embed_texts(texts: list[str], settings: Settings) -> list[list[float]]` that creates an OpenAI client and calls the embeddings API for a **single batch** of raw strings (no chunk IDs), with the same retry logic as `_embed_batch()` in `embeddings.py`.
-  - [ ] 6.6 Write `_cosine_similarity(a: list[float], b: list[float]) -> float` using dot product (valid because OpenAI embeddings are unit-normalised).
-  - [ ] 6.7 Write `_is_semantic_duplicate(candidate_topic: str, historical_topics: list[str], settings: Settings) -> tuple[bool, float]` that embeds the candidate and all historical topics in one batch call, computes pairwise cosine similarity, and returns `(True, max_score)` if any similarity ≥ `_DEDUP_SIMILARITY_THRESHOLD`, or `(False, max_score)` otherwise. The max score is always returned for logging/calibration.
-  - [ ] 6.8 Write `_is_duplicate(candidate_topic: str, historical_topics: list[str], settings: Settings) -> tuple[bool, float | None]` that runs Tier 1 first (returns `(True, None)` on exact match), then Tier 2 only if Tier 1 passes (returns the Tier 2 result). This avoids embedding API calls for obvious repeats.
-  - [ ] 6.9 Build the `recent_topics_block` string (for prompt injection per task 2.1) from the fetched historical topics and pass it into `build_trend_prompt()`.
-  - [ ] 6.10 In the candidate selection loop, call `_is_duplicate()` for each candidate in rank order; skip duplicates. Log the highest similarity score for every candidate checked. If all candidates are duplicates, log a warning and fall back to candidate #1.
-  - [ ] 6.11 Store the highest similarity score across all checked candidates in `TrendPassResult.dedup_max_similarity` and write it to `pipeline_runs.metadata['dedup_max_similarity']` for threshold calibration.
+- [x] 6.0 Implement historical topic deduplication (two-tier)
+  - [x] 6.1 Add constant `_DEDUP_SIMILARITY_THRESHOLD = 0.85` in `trend_pass.py`.
+  - [x] 6.2 Write `_fetch_recent_report_topics(connection, limit: int = 10) -> list[str]` that queries `reports` where `report_type = 'final'` ordered by `created_at DESC LIMIT <limit>` and returns the `title` column values (skipping NULLs).
+  - [x] 6.3 Write `_normalise_text(text: str) -> str` that lowercases, strips punctuation (using `str.translate` or regex), and collapses whitespace. This is used for Tier 1 deduplication.
+  - [x] 6.4 Write `_is_exact_duplicate(candidate: str, historical_topics: list[str]) -> bool` that normalises both sides and checks for exact equality against any historical topic. This is Tier 1 — zero cost.
+  - [x] 6.5 Write `_embed_texts(texts: list[str], settings: Settings) -> list[list[float]]` that creates an OpenAI client and calls the embeddings API for a **single batch** of raw strings (no chunk IDs), with the same retry logic as `_embed_batch()` in `embeddings.py`.
+  - [x] 6.6 Write `_cosine_similarity(a: list[float], b: list[float]) -> float` using dot product (valid because OpenAI embeddings are unit-normalised).
+  - [x] 6.7 Write `_is_semantic_duplicate(candidate_topic: str, historical_topics: list[str], settings: Settings) -> tuple[bool, float]` that embeds the candidate and all historical topics in one batch call, computes pairwise cosine similarity, and returns `(True, max_score)` if any similarity ≥ `_DEDUP_SIMILARITY_THRESHOLD`, or `(False, max_score)` otherwise. The max score is always returned for logging/calibration.
+  - [x] 6.8 Write `_is_duplicate(candidate_topic: str, historical_topics: list[str], settings: Settings) -> tuple[bool, float | None]` that runs Tier 1 first (returns `(True, None)` on exact match), then Tier 2 only if Tier 1 passes (returns the Tier 2 result). This avoids embedding API calls for obvious repeats.
+  - [x] 6.9 Build the `recent_topics_block` string (for prompt injection per task 2.1) from the fetched historical topics and pass it into `build_trend_prompt()`.
+  - [x] 6.10 In the candidate selection loop, call `_is_duplicate()` for each candidate in rank order; skip duplicates. Log the highest similarity score for every candidate checked. If all candidates are duplicates, log a warning and fall back to candidate #1.
+  - [x] 6.11 Store the highest similarity score across all checked candidates in `TrendPassResult.dedup_max_similarity` and write it to `pipeline_runs.metadata['dedup_max_similarity']` for threshold calibration.
 
-- [ ] 7.0 Implement output validation, re-prompt logic
-  - [ ] 7.1 Define `_KNOWN_BAD_PATTERNS: frozenset[str]` containing `"football analysis"` and `"tactical trends"`. Note: `"emerging football tactical trends"` is deliberately excluded — it is `_FALLBACK_TOPIC`, not a validation pattern. See PRD Section 6 "Fallback topic".
-  - [ ] 7.2 Write `_validate_topic(topic: str) -> bool` that returns `True` only if: word count is in range 5–25 and the lowercased topic is not in `_KNOWN_BAD_PATTERNS`.
-  - [ ] 7.3 Write `_reprompt_for_topic(rejected_phrase: str, settings: Settings, client: Anthropic) -> str` that calls the LLM once using `build_trend_reprompt()`, parses the plain-text response (not JSON — no `_parse_trend_candidates()` step), and returns the stripped result (or empty string on error).
-  - [ ] 7.4 In the candidate selection loop: for each candidate `topic`, first run deduplication (task 6.10), then call `_validate_topic()`; if validation fails, call `_reprompt_for_topic()` once and re-validate; if still invalid, record the rejection reason and move to the next candidate. After exhausting all candidates, raise `TrendPassError` with the full `candidates_tried` list.
+- [x] 7.0 Implement output validation, re-prompt logic
+  - [x] 7.1 Define `_KNOWN_BAD_PATTERNS: frozenset[str]` containing `"football analysis"` and `"tactical trends"`. Note: `"emerging football tactical trends"` is deliberately excluded — it is `_FALLBACK_TOPIC`, not a validation pattern. See PRD Section 6 "Fallback topic".
+  - [x] 7.2 Write `_validate_topic(topic: str) -> bool` that returns `True` only if: word count is in range 5–25 and the lowercased topic is not in `_KNOWN_BAD_PATTERNS`.
+  - [x] 7.3 Write `_reprompt_for_topic(rejected_phrase: str, settings: Settings, client: Anthropic) -> str` that calls the LLM once using `build_trend_reprompt()`, parses the plain-text response (not JSON — no `_parse_trend_candidates()` step), and returns the stripped result (or empty string on error).
+  - [x] 7.4 In the candidate selection loop: for each candidate `topic`, first run deduplication (task 6.10), then call `_validate_topic()`; if validation fails, call `_reprompt_for_topic()` once and re-validate; if still invalid, record the rejection reason and move to the next candidate. After exhausting all candidates, raise `TrendPassError` with the full `candidates_tried` list.
 
 ---
 

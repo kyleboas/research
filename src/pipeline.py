@@ -23,7 +23,7 @@ from .generation.critique_pass import run_critique_pass
 from .generation.draft_pass import run_draft_pass
 from .generation.research_pass import run_research_pass
 from .generation.revision_pass import run_revision_pass
-from .generation.trend_pass import TrendPassResult, run_trend_pass
+from .generation.trend_pass import TrendPassError, TrendPassResult, run_trend_pass
 from .processing.chunking import chunk_text
 from .processing.embeddings import embed_chunks, upsert_embeddings
 from .verification.claims import extract_claims
@@ -66,6 +66,7 @@ def _persist_stage_cost_metrics(
     pipeline_run_id: str,
     stage: str,
     metrics: dict[str, object],
+    metadata_updates: dict[str, object] | None = None,
 ) -> None:
     with connection.cursor() as cursor:
         cursor.execute(
@@ -223,7 +224,15 @@ def _persist_stage_cost_metrics(
             params: list[object] = [json.dumps(updated_cost)]
             if has_metadata_column:
                 set_clauses.append("metadata = %s::jsonb")
-                params.append(json.dumps({**existing_metadata, "pipeline_run_id": pipeline_run_id}))
+                params.append(
+                    json.dumps(
+                        {
+                            **existing_metadata,
+                            "pipeline_run_id": pipeline_run_id,
+                            **(metadata_updates or {}),
+                        }
+                    )
+                )
             set_clauses.extend(["status = %s", "finished_at = CASE WHEN %s = 'delivery' THEN NOW() ELSE finished_at END"])
             params.extend(["completed" if stage == "delivery" else "running", stage, run_id])
             cursor.execute(
@@ -246,7 +255,14 @@ def _persist_stage_cost_metrics(
                 WHERE id = %s
                 """,
                 (
-                    json.dumps({**existing_metadata, "pipeline_run_id": pipeline_run_id, "cost_estimate_json": updated_cost}),
+                    json.dumps(
+                        {
+                            **existing_metadata,
+                            "pipeline_run_id": pipeline_run_id,
+                            **(metadata_updates or {}),
+                            "cost_estimate_json": updated_cost,
+                        }
+                    ),
                     "completed" if stage == "delivery" else "running",
                     stage,
                     run_id,
@@ -590,13 +606,25 @@ def run_generation(
     import psycopg
 
     with psycopg.connect(settings.postgres_dsn) as connection:
+        trend_metadata_updates: dict[str, object] = {}
         if topic is None:
             trend_start = time.perf_counter()
-            trend_result = run_trend_pass(connection, settings=settings)
-            if isinstance(trend_result, TrendPassResult):
+            try:
+                trend_result = run_trend_pass(connection, settings=settings)
                 topic = trend_result.topic
-            else:
-                topic = trend_result
+                trend_metadata_updates = {
+                    "trend_candidates": [candidate.topic for candidate in trend_result.candidates],
+                    "trend_lookback_days": trend_result.lookback_days,
+                    "dedup_max_similarity": trend_result.dedup_max_similarity,
+                }
+            except TrendPassError as exc:
+                LOGGER.warning("Trend pass failed; using fallback topic", extra={"error": str(exc)})
+                topic = "emerging football tactical trends"
+                trend_metadata_updates = {
+                    "trend_candidates": [entry.get("topic") for entry in exc.candidates_tried if entry.get("topic")],
+                    "trend_lookback_days": 7,
+                    "dedup_max_similarity": None,
+                }
             trend_elapsed = time.perf_counter() - trend_start
             _log_event(
                 pipeline_run_id=pipeline_run_id,
@@ -724,6 +752,7 @@ def run_generation(
                 "model": settings.anthropic_model_id,
                 "model_tier": generation_model_tier,
             },
+            metadata_updates=trend_metadata_updates,
         )
         connection.commit()
 
