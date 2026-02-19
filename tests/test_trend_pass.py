@@ -332,7 +332,7 @@ def test_run_generation_catches_trend_pass_error(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         pipeline,
         "load_settings",
-        lambda: SimpleNamespace(postgres_dsn="dsn", anthropic_model_id="claude-sonnet"),
+        lambda: SimpleNamespace(postgres_dsn="dsn", anthropic_model_id="claude-sonnet", anthropic_lead_model_id="claude-opus"),
     )
     monkeypatch.setattr(
         pipeline,
@@ -343,14 +343,30 @@ def test_run_generation_catches_trend_pass_error(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(
         pipeline,
-        "run_research_pass",
+        "run_lead_agent",
         lambda *_a, **_k: SimpleNamespace(
-            queries=["q"],
-            chunks=[SimpleNamespace(text="context")],
-            to_json=lambda: "{}",
+            to_dict=lambda: {"planning_reasoning": "reason"},
+            task_descriptions=[SimpleNamespace(angle_slug="angle")],
         ),
     )
-    monkeypatch.setattr(pipeline, "run_draft_pass", lambda *_a, **_k: "draft")
+    monkeypatch.setattr(
+        pipeline,
+        "run_parallel_subagents",
+        lambda *_a, **_k: [
+            SimpleNamespace(
+                error=None,
+                angle="Angle",
+                angle_slug="angle",
+                chunks=[{"chunk_id": 1, "source_id": 1, "text": "context"}],
+                elapsed_s=0.1,
+                total_rounds=1,
+                input_tokens=1,
+                output_tokens=1,
+                to_dict=lambda: {"angle_slug": "angle"},
+            )
+        ],
+    )
+    monkeypatch.setattr(pipeline, "run_synthesis_pass", lambda *_a, **_k: "draft")
     monkeypatch.setattr(pipeline, "run_critique_pass", lambda *_a, **_k: "critique")
     monkeypatch.setattr(pipeline, "run_revision_pass", lambda *_a, **_k: "final")
     monkeypatch.setattr(pipeline, "_persist_stage_cost_metrics", lambda *_a, **_k: None)

@@ -2,9 +2,9 @@ import re
 from types import SimpleNamespace
 
 from src.config import Settings
-from src.generation.draft_pass import run_draft_pass
-from src.generation.research_pass import ContextPacket
 from src.generation.revision_pass import run_revision_pass
+from src.generation.sub_agent import SubAgentResult
+from src.generation.synthesis_pass import run_synthesis_pass
 
 
 class _FakeMessages:
@@ -43,17 +43,31 @@ def _settings() -> Settings:
     )
 
 
-def test_draft_and_final_outputs_include_required_citation_markers(monkeypatch) -> None:
-    monkeypatch.setattr("src.generation.draft_pass.Anthropic", _FakeAnthropic)
+def test_synthesis_and_final_outputs_include_required_citation_markers(monkeypatch) -> None:
+    monkeypatch.setattr("src.generation.synthesis_pass.Anthropic", _FakeAnthropic)
     monkeypatch.setattr("src.generation.revision_pass.Anthropic", _FakeAnthropic)
 
-    context_packet = ContextPacket(topic="topic", queries=[], chunks=[])
+    subagent_results = [
+        SubAgentResult(
+            angle="Angle",
+            angle_slug="angle",
+            chunks=[{"source_id": 1, "chunk_id": 10, "text": "evidence", "combined_score": 1.0}],
+            summary="Summary [S1:C10]",
+            citations=["[S1:C10]"],
+            search_trajectory=[],
+            total_rounds=1,
+            elapsed_s=0.1,
+            input_tokens=1,
+            output_tokens=1,
+            error=None,
+        )
+    ]
     citation_pattern = re.compile(r"\[S\d+:C\d+\]")
 
-    draft = run_draft_pass(topic="topic", context_packet=context_packet, settings=_settings())
+    draft = run_synthesis_pass(topic="topic", subagent_results=subagent_results, settings=_settings())
     final = run_revision_pass(
         topic="topic",
-        context_packet=context_packet,
+        context_packet=SimpleNamespace(to_json=lambda: "{}"),
         draft_markdown=draft,
         critique_markdown="keep citations",
         settings=_settings(),

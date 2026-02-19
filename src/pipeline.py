@@ -20,13 +20,15 @@ from .ingestion.markdown import html_to_markdown
 from .ingestion.newsblur import fetch_newsblur_records, load_newsblur_config_from_env
 from .ingestion.youtube import fetch_all_channels, load_youtube_channel_configs_from_env
 from .generation.critique_pass import run_critique_pass
-from .generation.draft_pass import run_draft_pass
-from .generation.research_pass import run_research_pass
+from .generation.lead_agent import run_lead_agent
 from .generation.revision_pass import run_revision_pass
+from .generation.sub_agent import run_parallel_subagents
+from .generation.synthesis_pass import run_synthesis_pass
 from .generation.trend_pass import _FALLBACK_TOPIC, TrendPassError, TrendPassResult, run_trend_pass
 from .processing.chunking import chunk_text
 from .processing.embeddings import embed_chunks, upsert_embeddings
 from .verification.claims import extract_claims
+from .verification.llm_judge import run_llm_judge
 from .verification.nli_check import check_claims_against_citations
 from .verification.scoring import score_claim_results
 
@@ -637,18 +639,49 @@ def run_generation(
                 elapsed_s=round(trend_elapsed, 3),
             )
 
-        research_start = time.perf_counter()
-        context_packet = run_research_pass(connection, topic=topic, settings=settings)
-        research_elapsed = time.perf_counter() - research_start
+        lead_start = time.perf_counter()
+        lead_result = run_lead_agent(topic=topic, settings=settings)
+        lead_elapsed = time.perf_counter() - lead_start
 
-        draft_start = time.perf_counter()
-        draft_markdown = run_draft_pass(topic=topic, context_packet=context_packet, settings=settings)
-        draft_elapsed = time.perf_counter() - draft_start
+        subagents_start = time.perf_counter()
+        subagent_results = run_parallel_subagents(lead_result.task_descriptions, settings.postgres_dsn, settings)
+        subagents_elapsed = time.perf_counter() - subagents_start
+
+        subagent_dir = artifacts_dir_path / "subagents"
+        subagent_dir.mkdir(parents=True, exist_ok=True)
+        for result in subagent_results:
+            (subagent_dir / f"{result.angle_slug}.json").write_text(
+                json.dumps(result.to_dict(), indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+
+        lead_plan_path = artifacts_dir_path / "lead_agent_plan.json"
+        lead_plan_path.write_text(json.dumps(lead_result.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+
+        synthesis_start = time.perf_counter()
+        draft_markdown = run_synthesis_pass(topic=topic, subagent_results=subagent_results, settings=settings)
+        synthesis_elapsed = time.perf_counter() - synthesis_start
+
+        successful_subagents = [result for result in subagent_results if result.error is None]
+        failed_subagents = [result for result in subagent_results if result.error is not None]
+        deduped_chunks_by_id: dict[int, dict[str, object]] = {}
+        for result in successful_subagents:
+            for chunk in result.chunks:
+                deduped_chunks_by_id[int(chunk["chunk_id"])] = chunk
+        context_packet_json = json.dumps(
+            {
+                "topic": topic,
+                "chunks": list(deduped_chunks_by_id.values()),
+                "failed_angles": [result.angle for result in failed_subagents],
+            },
+            indent=2,
+            sort_keys=True,
+        )
 
         critique_start = time.perf_counter()
         critique_markdown = run_critique_pass(
             topic=topic,
-            context_packet=context_packet,
+            context_packet=context_packet_json,
             draft_markdown=draft_markdown,
             settings=settings,
         )
@@ -657,7 +690,7 @@ def run_generation(
         revision_start = time.perf_counter()
         final_markdown = run_revision_pass(
             topic=topic,
-            context_packet=context_packet,
+            context_packet=context_packet_json,
             draft_markdown=draft_markdown,
             critique_markdown=critique_markdown,
             settings=settings,
@@ -666,12 +699,24 @@ def run_generation(
 
         stage_metrics = {
             "topic": topic,
-            "query_count": len(context_packet.queries),
-            "context_chunks": len(context_packet.chunks),
-            "research_elapsed_s": round(research_elapsed, 3),
-            "draft_elapsed_s": round(draft_elapsed, 3),
+            "subagent_count": len(subagent_results),
+            "subagent_failures": len(failed_subagents),
+            "lead_elapsed_s": round(lead_elapsed, 3),
+            "subagents_elapsed_s": round(subagents_elapsed, 3),
+            "synthesis_elapsed_s": round(synthesis_elapsed, 3),
             "critique_elapsed_s": round(critique_elapsed, 3),
             "revision_elapsed_s": round(revision_elapsed, 3),
+            "subagent_metrics": [
+                {
+                    "angle_slug": result.angle_slug,
+                    "elapsed_s": result.elapsed_s,
+                    "total_rounds": result.total_rounds,
+                    "input_tokens": result.input_tokens,
+                    "output_tokens": result.output_tokens,
+                    "error": result.error,
+                }
+                for result in subagent_results
+            ],
         }
         if trend_metadata_updates:
             stage_metrics.update(trend_metadata_updates)
@@ -684,7 +729,7 @@ def run_generation(
         draft_path.write_text(draft_markdown, encoding="utf-8")
         critique_path.write_text(critique_markdown, encoding="utf-8")
         final_path.write_text(final_markdown, encoding="utf-8")
-        context_path.write_text(context_packet.to_json(), encoding="utf-8")
+        context_path.write_text(context_packet_json, encoding="utf-8")
 
         with connection.cursor() as cursor:
             cursor.execute(
@@ -723,26 +768,33 @@ def run_generation(
             )
 
         generation_model_tier = _resolve_generation_model_tier(settings.anthropic_model_id)
-        research_input_tokens = sum(_estimate_tokens_from_text(chunk.text) for chunk in context_packet.chunks)
-        draft_input_tokens = _estimate_tokens_from_text(context_packet.to_json()) + _estimate_tokens_from_text(topic)
-        draft_output_tokens = _estimate_tokens_from_text(draft_markdown)
-        critique_input_tokens = draft_input_tokens + draft_output_tokens
+        lead_input_tokens = _estimate_tokens_from_text(topic)
+        lead_output_tokens = _estimate_tokens_from_text(json.dumps(lead_result.to_dict(), sort_keys=True))
+        synthesis_input_tokens = _estimate_tokens_from_text(context_packet_json)
+        synthesis_output_tokens = _estimate_tokens_from_text(draft_markdown)
+        subagent_input_tokens = sum(result.input_tokens for result in subagent_results)
+        subagent_output_tokens = sum(result.output_tokens for result in subagent_results)
+        critique_input_tokens = synthesis_input_tokens + synthesis_output_tokens
         critique_output_tokens = _estimate_tokens_from_text(critique_markdown)
         revision_input_tokens = critique_input_tokens + critique_output_tokens
         revision_output_tokens = _estimate_tokens_from_text(final_markdown)
 
         generation_token_count = (
-            research_input_tokens
-            + draft_input_tokens
-            + draft_output_tokens
+            lead_input_tokens
+            + lead_output_tokens
+            + subagent_input_tokens
+            + subagent_output_tokens
+            + synthesis_input_tokens
+            + synthesis_output_tokens
             + critique_input_tokens
             + critique_output_tokens
             + revision_input_tokens
             + revision_output_tokens
         )
         generation_estimated_cost_usd = round(
-            _estimate_generation_step_cost(input_tokens=research_input_tokens, output_tokens=0, model_tier=generation_model_tier)
-            + _estimate_generation_step_cost(input_tokens=draft_input_tokens, output_tokens=draft_output_tokens, model_tier=generation_model_tier)
+            _estimate_generation_step_cost(input_tokens=lead_input_tokens, output_tokens=lead_output_tokens, model_tier=_resolve_generation_model_tier(settings.anthropic_lead_model_id))
+            + _estimate_generation_step_cost(input_tokens=subagent_input_tokens, output_tokens=subagent_output_tokens, model_tier=generation_model_tier)
+            + _estimate_generation_step_cost(input_tokens=synthesis_input_tokens, output_tokens=synthesis_output_tokens, model_tier=generation_model_tier)
             + _estimate_generation_step_cost(input_tokens=critique_input_tokens, output_tokens=critique_output_tokens, model_tier=generation_model_tier)
             + _estimate_generation_step_cost(input_tokens=revision_input_tokens, output_tokens=revision_output_tokens, model_tier=generation_model_tier),
             6,
@@ -837,6 +889,7 @@ def run_verification(*, pipeline_run_id: str | None = None) -> str:
         verification_results = check_claims_against_citations(claims, chunk_text_by_id)
         score = score_claim_results(verification_results)
         result_by_claim_id = {result.claim_id: result for result in verification_results}
+        llm_judge_result = run_llm_judge(report_markdown, chunk_text_by_id, settings)
 
         with connection.cursor() as cursor:
             cursor.execute("DELETE FROM claims WHERE report_id = %s", (report_id,))
@@ -878,11 +931,16 @@ def run_verification(*, pipeline_run_id: str | None = None) -> str:
                 """
                 UPDATE reports
                 SET metadata = jsonb_set(
-                    metadata,
-                    '{verification}',
-                    %s::jsonb,
-                    true
-                )
+                        jsonb_set(
+                            metadata,
+                            '{verification}',
+                            %s::jsonb,
+                            true
+                        ),
+                        '{llm_judge}',
+                        %s::jsonb,
+                        true
+                    )
                 WHERE id = %s
                 """,
                 (
@@ -895,21 +953,29 @@ def run_verification(*, pipeline_run_id: str | None = None) -> str:
                             "quality_score": score.quality_score,
                         }
                     ),
+                    json.dumps(llm_judge_result.to_dict()),
                     report_id,
                 ),
             )
 
-        verification_token_count = _estimate_tokens_from_text(report_markdown) + sum(
+        llm_judge_input_tokens = _estimate_tokens_from_text(report_markdown) + sum(
             _estimate_tokens_from_text(chunk_text) for chunk_text in chunk_text_by_id.values()
         )
+        llm_judge_estimated_cost_usd = round(
+            (llm_judge_input_tokens / 1_000_000) * SONNET_INPUT_COST_PER_MILLION_TOKENS_USD,
+            6,
+        )
+        verification_token_count = llm_judge_input_tokens
         _persist_stage_cost_metrics(
             connection,
             pipeline_run_id=pipeline_run_id,
             stage="verification",
             metrics={
                 "token_count": verification_token_count,
-                "estimated_cost_usd": 0.0,
-                "notes": "Rule-based verification currently has no external model billing.",
+                "estimated_cost_usd": llm_judge_estimated_cost_usd,
+                "llm_judge_input_tokens": llm_judge_input_tokens,
+                "llm_judge_estimated_cost_usd": llm_judge_estimated_cost_usd,
+                "llm_judge_pass": llm_judge_result.overall_pass,
             },
         )
 
@@ -927,6 +993,8 @@ def run_verification(*, pipeline_run_id: str | None = None) -> str:
         supported_claims=score.supported_claims,
         uncertain_claims=score.uncertain_claims,
         unsupported_claims=score.unsupported_claims,
+        llm_judge_pass=llm_judge_result.overall_pass,
+        llm_judge_average_score=round(llm_judge_result.average_score(), 3),
     )
     return pipeline_run_id
 

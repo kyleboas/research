@@ -17,7 +17,7 @@ def test_load_youtube_configs_from_markdown_when_env_missing(monkeypatch):
 
     assert len(configs) > 0
     assert any(config.name == "BeanymanSports" for config in configs)
-    assert any(config.channel_id == "UCHp5Oflmg2bsuAaO_5JB7Uw" for config in configs)
+    assert any(config.channel_id == "UCiVg6vRhuyjsWgHkDNOig6A" for config in configs)
 
 
 def test_env_overrides_markdown_for_feed_sources(monkeypatch):
