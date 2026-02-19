@@ -63,7 +63,7 @@ This PRD deliberately scopes down several aspects of Anthropic's production syst
    - Open questions and unresolved debates (existing)
    - Background and prior work (new)
 6. The system must implement a `SynthesisPass` in `src/generation/synthesis_pass.py` that replaces `draft_pass.py` in the pipeline; it receives all `SubAgentResult` objects and produces a single cited markdown report. `draft_pass.py` must be deleted (not kept as dead code).
-7. The system must retain the existing `CritiquePass` and `RevisionPass` unchanged.
+7. The system must retain the existing `CritiquePass` and `RevisionPass` unchanged in implementation and interface; they must accept and revise the synthesis markdown regardless of section names, so no fixed four-section compatibility requirement is imposed.
 8. The system must implement an `LLMJudge` in `src/verification/llm_judge.py` that:
    a. Accepts the final revised markdown and the source chunks used.
    b. Issues a single Claude API call (using `anthropic_model_id` / Sonnet) with a rubric covering: factual accuracy, citation accuracy, completeness, source quality, source diversity.
@@ -73,7 +73,7 @@ This PRD deliberately scopes down several aspects of Anthropic's production syst
 10. The system must log each subagent's wall-clock time, token count, chunk count, and search trajectory to `pipeline_runs.cost_estimate_json`. Each `SubAgentResult` artifact must include the full search trajectory (queries issued per round, chunks retrieved per round, LLM evaluation reasoning per round).
 11. The lead agent prompt must include explicit scaling rules: simple (1 subagent), moderate (2–4 subagents), complex (5–7 subagents, clearly divided responsibilities).
 12. Each subagent must implement the "start wide, then narrow" principle architecturally: the first search round uses a broad query; subsequent rounds use queries refined by the LLM based on gaps in the initial results. This is enforced by the search loop (requirement 3b), not just by prompt instructions.
-13. The synthesis pass must have its own dedicated prompt template (`SYNTHESIS_SYSTEM` / `SYNTHESIS_USER_TEMPLATE` / `build_synthesis_prompt()`) — it must not reuse the subagent prompt. The synthesis prompt receives: topic, per-subagent summaries, deduplicated chunks JSON, and instructions to merge angles into a coherent report with sections: Executive Summary, Key Findings, Evidence Notes, Open Questions.
+13. The synthesis pass must have its own dedicated prompt template (`SYNTHESIS_SYSTEM` / `SYNTHESIS_USER_TEMPLATE` / `build_synthesis_prompt()`) — it must not reuse the subagent prompt. The synthesis prompt receives: topic, per-subagent summaries, deduplicated chunks JSON, and instructions to merge angles into a coherent report using the `research.md` format: a descriptive H1 title, numbered H2 sections named after the chosen research angles (topic-specific headings), optional H3 subsections where useful, bold key figures/statistics inline, tables for structured comparisons, `---` separators between major sections, and a standalone `## Conclusion` section.
 
 ---
 
