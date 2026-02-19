@@ -1,12 +1,12 @@
-# PRD: Multi-Agent Research System (research.yml)
+# PRD: Multi-Agent Research System (report.yml)
 
 ## 1. Introduction / Overview
 
 The current pipeline (`report.yml`) generates weekly research reports using a **sequential** 5-pass LLM approach: trend → research → draft → critique → revision. Each pass runs one at a time, and the "research" pass fires 7 curated queries one after another.
 
-This feature replaces the sequential generation stage with a **multi-agent orchestrator-worker architecture** inspired by Anthropic's internal Research system (documented in `docs/how.md`). A lead agent (Claude Opus) coordinates parallel subagents (Claude Sonnet), each independently searching a distinct research angle, then hands results to a synthesis pass that produces the final report.
+This feature updates the existing `report.yml` workflow and its underlying Python generation modules to implement a **multi-agent orchestrator-worker architecture** inspired by Anthropic's internal Research system (documented in `docs/how.md`). A lead agent (Claude Opus) coordinates parallel subagents (Claude Sonnet), each independently searching a distinct research angle, then hands results to a synthesis pass that produces the final report.
 
-The changes live in a new workflow file `.github/workflows/research.yml` (replacing `report.yml`) and the corresponding Python generation modules.
+No new workflow file is created — all changes land in `.github/workflows/report.yml` and the corresponding Python modules under `src/`.
 
 ---
 
@@ -26,13 +26,13 @@ The changes live in a new workflow file `.github/workflows/research.yml` (replac
 - **As a pipeline operator**, I want the orchestrator to allocate fewer subagents to simple queries (single fact lookups) and more to complex queries (multi-dimensional topics), so tokens are spent efficiently.
 - **As a developer**, I want each subagent to receive an explicit, non-overlapping task description so that subagents don't duplicate searches.
 - **As a developer**, I want an LLM-as-judge evaluation score attached to every report so I can track quality trends over time.
-- **As a pipeline operator**, I want the new workflow in `research.yml` to be resumable from any stage (generation, verification, delivery) so that partial failures don't require full reruns.
+- **As a pipeline operator**, I want `report.yml` to remain resumable from any stage (generation, verification, delivery) so that partial failures don't require full reruns.
 
 ---
 
 ## 4. Functional Requirements
 
-1. The system must have a `.github/workflows/research.yml` that mirrors `report.yml`'s stage structure (init → generation → verification → delivery) with the same `from_stage` resume capability.
+1. The system must update `.github/workflows/report.yml` to retain its existing stage structure (init → generation → verification → delivery) and `from_stage` resume capability unchanged.
 2. The system must implement a `LeadAgent` class in `src/generation/lead_agent.py` that:
    a. Accepts a topic string and a complexity score.
    b. Selects N subagents (1 for simple, 2–4 for moderate, 5–7 for complex) based on explicit scaling rules.
@@ -77,7 +77,7 @@ The changes live in a new workflow file `.github/workflows/research.yml` (replac
 
 ## 6. Design Considerations
 
-- **Backwards compatibility**: `report.yml` should remain functional during rollout; `research.yml` is additive.
+- **Backwards compatibility**: `report.yml`'s trigger schedule, secrets, and stage names must remain unchanged; only the Python modules it calls are updated.
 - **Subagent result format**: `SubAgentResult` must be JSON-serialisable so it can be stored as an artifact for debugging.
 - **Context isolation**: Each subagent gets its own context window with only its assigned chunks — no shared state between subagents during retrieval.
 - **Lead agent model**: Claude Opus (`ANTHROPIC_MODEL_ID` or a new `ANTHROPIC_LEAD_MODEL_ID` env var). Subagents use Sonnet (`anthropic_model_id`). Critique uses Haiku (`anthropic_small_model_id`) — unchanged.

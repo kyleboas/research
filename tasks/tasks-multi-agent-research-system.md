@@ -2,11 +2,11 @@
 
 ## Relevant Files
 
-- `.github/workflows/research.yml` - New workflow replacing `report.yml`; same init/generation/verification/delivery stage structure with `from_stage` resume support.
+- `.github/workflows/report.yml` - Existing; no structural changes — schedule, secrets, and stage names are preserved.
 - `src/generation/lead_agent.py` - New: LeadAgent class; selects subagent count based on complexity; produces task descriptions.
 - `src/generation/sub_agent.py` - New: SubAgent class; executes one research angle; returns SubAgentResult.
-- `src/generation/synthesis_pass.py` - New: replaces draft_pass.py; merges all SubAgentResults into a single cited markdown.
-- `src/generation/draft_pass.py` - Existing; to be superseded by synthesis_pass.py (kept for backwards-compat with report.yml).
+- `src/generation/synthesis_pass.py` - New: replaces draft_pass.py in the generation flow; merges all SubAgentResults into a single cited markdown.
+- `src/generation/draft_pass.py` - Existing; superseded by synthesis_pass.py; kept but no longer called by pipeline.py.
 - `src/generation/critique_pass.py` - Existing; unchanged.
 - `src/generation/revision_pass.py` - Existing; unchanged.
 - `src/generation/prompts.py` - Existing; extended with lead agent and subagent prompt templates.
@@ -46,5 +46,4 @@ Update the file after completing each sub-task, not just after completing an ent
 - [ ] 3.0 Implement SubAgent (worker) with parallel execution
 - [ ] 4.0 Implement SynthesisPass (replaces DraftPass in multi-agent flow)
 - [ ] 5.0 Implement LLMJudge and wire into verification stage
-- [ ] 6.0 Create `.github/workflows/research.yml`
-- [ ] 7.0 Write tests and run full suite
+- [ ] 6.0 Write tests and run full suite
