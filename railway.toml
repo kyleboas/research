@@ -1,0 +1,33 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+# Each Railway service reads PIPELINE_STEP from its environment variables.
+# Create three services in the Railway dashboard, all pointing to this repo:
+#
+#   Service: ingest
+#     PIPELINE_STEP=ingest
+#     Cron schedule: 0 */2 * * *   (every 2 hours)
+#
+#   Service: detect
+#     PIPELINE_STEP=detect
+#     Cron schedule: 0 */4 * * *   (every 4 hours)
+#
+#   Service: report
+#     PIPELINE_STEP=report
+#     Cron schedule: 0 6 * * *     (daily at 6am)
+#
+# Set these variables in Railway's Variables tab for all three services:
+#
+#   CLOUDFLARE_GATEWAY_URL   https://gateway.ai.cloudflare.com/v1/ACCOUNT/GATEWAY
+#   CLOUDFLARE_GATEWAY_TOKEN your-gateway-token
+#   DATABASE_URL             ${{Postgres.DATABASE_URL}}   ← Railway reference variable
+#   TRANSCRIPT_API_KEY       your-transcript-api-key
+#
+# Anthropic and OpenAI keys are stored as credentials in the Cloudflare dashboard.
+#
+# After first deploy, run sql/schema.sql via Railway's Postgres query console
+# (or psql) to create the tables.
+
+startCommand = "python main.py --step ${PIPELINE_STEP:-all}"
+restartPolicyType = "never"

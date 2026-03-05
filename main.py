@@ -6,7 +6,7 @@ Architecture mirrors Anthropic's production research system:
   → Synthesis → Sufficiency evaluation → optional re-plan → CitationAgent → Revision
 """
 
-import json, logging, os, re
+import argparse, json, logging, os, re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -21,18 +21,22 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 ROOT = Path(__file__).resolve().parent
 GATEWAY = os.environ["CLOUDFLARE_GATEWAY_URL"].rstrip("/")
+GATEWAY_TOKEN = os.environ["CLOUDFLARE_GATEWAY_TOKEN"]
 TRANSCRIPT_KEY = os.environ["TRANSCRIPT_API_KEY"]
 LEAD_MODEL = os.environ.get("CLAUDE_LEAD_MODEL", "claude-opus-4-6")
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-3-small")
 
+_gw_headers = {"cf-aig-authorization": f"Bearer {GATEWAY_TOKEN}"}
 claude = anthropic.Anthropic(
-    api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+    api_key=os.environ.get("ANTHROPIC_API_KEY", "cloudflare"),
     base_url=f"{GATEWAY}/anthropic",
+    default_headers=_gw_headers,
 )
 oai = openai.OpenAI(
-    api_key=os.environ.get("OPENAI_API_KEY", ""),
+    api_key=os.environ.get("OPENAI_API_KEY", "cloudflare"),
     base_url=f"{GATEWAY}/openai",
+    default_headers=_gw_headers,
 )
 
 CITATION_FMT = "Cite every claim as [S<source_id>:C<chunk_id>]. Never cite IDs not in the provided context."
@@ -245,6 +249,25 @@ def parse_json(text):
     if match:
         return json.loads(match.group())
     raise ValueError(f"No JSON found in response: {text[:200]}")
+
+# ══════════════════════════════════════════════
+# Pipeline state (persists trend between steps)
+# ══════════════════════════════════════════════
+
+def save_state(conn, key, value):
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO pipeline_state (key, value) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+            (key, value),
+        )
+        conn.commit()
+
+def load_state(conn, key):
+    with conn.cursor() as cur:
+        cur.execute("SELECT value FROM pipeline_state WHERE key = %s", (key,))
+        row = cur.fetchone()
+        return row[0] if row else None
 
 # ══════════════════════════════════════════════
 # Trend detection
@@ -705,34 +728,71 @@ def generate_report(conn, trend):
 # Main
 # ══════════════════════════════════════════════
 
-def main():
-    conn = psycopg.connect(os.environ["POSTGRES_DSN"])
+def run_ingest(conn):
     new = 0
-
     for name, url in parse_feeds(ROOT / "feeds" / "rss.md"):
         for item in fetch_rss(name, url):
             sid = store_source(conn, item, "rss")
             if sid:
                 chunk_and_embed(conn, sid, item["content"])
                 new += 1
-
     for name, cid in parse_youtube(ROOT / "feeds" / "youtube.md"):
         for item in fetch_youtube(name, cid):
             sid = store_source(conn, item, "youtube")
             if sid:
                 chunk_and_embed(conn, sid, item["content"])
                 new += 1
-
     log.info("Ingested %d new sources", new)
 
+
+def run_detect(conn):
     trend = detect_trends(conn)
     if trend:
         log.info("Detected trend: %s", trend)
-        generate_report(conn, trend)
+        save_state(conn, "pending_trend", trend)
     else:
         log.info("No novel trend detected this run")
 
-    conn.close()
+
+def run_report(conn):
+    trend = load_state(conn, "pending_trend")
+    if not trend:
+        log.info("No pending trend found — skipping report")
+        return
+    log.info("Generating report for trend: %s", trend)
+    generate_report(conn, trend)
+    save_state(conn, "pending_trend", "")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Football research pipeline")
+    parser.add_argument(
+        "--step",
+        choices=["ingest", "detect", "report", "all"],
+        default="all",
+        help="Pipeline step to run (default: all)",
+    )
+    args = parser.parse_args()
+
+    conn = psycopg.connect(os.environ["DATABASE_URL"])
+    try:
+        if args.step == "ingest":
+            run_ingest(conn)
+        elif args.step == "detect":
+            run_detect(conn)
+        elif args.step == "report":
+            run_report(conn)
+        else:
+            run_ingest(conn)
+            trend = detect_trends(conn)
+            if trend:
+                log.info("Detected trend: %s", trend)
+                generate_report(conn, trend)
+            else:
+                log.info("No novel trend detected this run")
+    finally:
+        conn.close()
+
 
 if __name__ == "__main__":
     main()
