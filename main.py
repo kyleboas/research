@@ -774,7 +774,7 @@ def main():
     )
     args = parser.parse_args()
 
-    conn = psycopg.connect(os.environ["POSTGRES_DSN"])
+    conn = psycopg.connect(os.environ["DATABASE_URL"])
     try:
         if args.step == "ingest":
             run_ingest(conn)
