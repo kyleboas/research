@@ -2,16 +2,60 @@
 
 Automatic deep research system that ingests football content, detects novel tactical trends, and generates production-grade sourced reports using multi-agent orchestration.
 
+Architecture mirrors [Anthropic's multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system).
+
 ## How it works
 
 1. **Ingest** — Fetches RSS feeds and YouTube transcripts every 2 hours, stores full content in Supabase Postgres with vector embeddings.
 2. **Detect** — Uses Claude to identify novel tactics being tried by players/teams before they become mainstream.
 3. **Report** — Multi-agent deep research pipeline:
-   - **Lead agent** (Opus) decomposes trend into non-overlapping research angles
-   - **Parallel subagents** (Sonnet) run iterative retrieval loops per angle (broaden → evaluate sufficiency → narrow)
-   - **Synthesis** merges all subagent outputs into a cohesive draft with citations
-   - **Critique** evaluates grounding against source evidence, flags hallucinations
-   - **Revision** produces the final report incorporating critique feedback
+
+```
+┌─────────────────────────────────────────────────────┐
+│ LeadResearcher (Opus + extended thinking)            │
+│ - Assesses complexity (simple/moderate/complex)      │
+│ - Decomposes into non-overlapping research angles    │
+│ - Calibrates subagent count + retrieval depth        │
+└───────────────────────┬─────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────┐
+│ Parallel Subagents (Sonnet × N)                     │
+│ OODA loop per angle:                                │
+│   Observe: hybrid search (semantic + keyword RRF)   │
+│   Orient:  evaluate coverage vs objective           │
+│   Decide:  generate narrower query or stop          │
+│   Act:     retrieve again (up to 5 rounds)          │
+└───────────────────────┬─────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────┐
+│ Synthesis                                           │
+│ Merge all subagent outputs into cohesive draft      │
+└───────────────────────┬─────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────┐
+│ Sufficiency Evaluation (LeadResearcher re-planning) │
+│ - Evaluates draft quality with extended thinking    │
+│ - If gaps found: spawn MORE subagents → re-synth   │
+│ - Up to 2 research rounds                          │
+└───────────────────────┬─────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────┐
+│ CitationAgent                                       │
+│ Verifies every [S:C] tag maps to real evidence      │
+│ Flags hallucinated IDs, uncited claims, mismatches  │
+└───────────────────────┬─────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────┐
+│ Revision Editor                                     │
+│ Applies all citation fixes, qualifies speculation,  │
+│ produces final publication-quality report            │
+└─────────────────────────────────────────────────────┘
+```
 
 All API calls route through **Cloudflare AI Gateway**.
 
@@ -36,7 +80,7 @@ Edit `feeds/rss.md` and `feeds/youtube.md` to add/remove sources.
 
 ```
 main.py              # entire pipeline (single file)
-sql/schema.sql       # 3 tables + hybrid search function
+sql/schema.sql       # 3 tables + hybrid RRF search function
 feeds/rss.md         # RSS feed list
 feeds/youtube.md     # YouTube channel list
 reports/             # generated reports (gitignored)
