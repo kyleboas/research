@@ -22,8 +22,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 ROOT = Path(__file__).resolve().parent
 GATEWAY = os.environ["CLOUDFLARE_GATEWAY_URL"].rstrip("/")
 TRANSCRIPT_KEY = os.environ["TRANSCRIPT_API_KEY"]
-LEAD_MODEL = os.environ.get("CLAUDE_LEAD_MODEL", "claude-opus-4-0-20250514")
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5-20250514")
+LEAD_MODEL = os.environ.get("CLAUDE_LEAD_MODEL", "claude-opus-4-6")
+MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-3-small")
 
 claude = anthropic.Anthropic(
