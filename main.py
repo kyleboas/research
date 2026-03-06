@@ -45,19 +45,31 @@ def _normalize_cloudflare_base_urls(raw_url: str):
     - .../openai
     - .../openai/chat/completions
     - .../compat/chat/completions
+    - .../compat
 
-    For compat chat endpoints, embeddings use the OpenAI-compatible /v1/embeddings
-    route, so we derive an embeddings base URL ending in /v1.
+    All inputs are normalised to use the /openai provider route so that the
+    OpenAI SDK appends /chat/completions and /embeddings to a valid provider
+    path.  Plain prefix + "/v1" is not a valid AI Gateway provider route and
+    produces a 400 Invalid provider response.
     """
     base = raw_url.rstrip("/")
 
     if base.endswith("/openai/chat/completions"):
-        return base[: -len("/chat/completions")], base[: -len("/chat/completions")]
+        provider = base[: -len("/chat/completions")]
+        return provider, provider
+
     if base.endswith("/openai"):
         return base, base
+
     if base.endswith("/compat/chat/completions"):
         prefix = base[: -len("/compat/chat/completions")]
-        return f"{prefix}/compat", f"{prefix}/v1"
+        provider = f"{prefix}/openai"
+        return provider, provider
+
+    if base.endswith("/compat"):
+        prefix = base[: -len("/compat")]
+        provider = f"{prefix}/openai"
+        return provider, provider
 
     return base, base
 
@@ -229,6 +241,9 @@ def embed(texts):
         try:
             resp = client.embeddings.create(model=EMBED_MODEL, input=texts)
             return [d.embedding for d in resp.data]
+        except openai.BadRequestError as e:
+            log.error("Embeddings request rejected (bad request — check model/config): %s", e)
+            return None
         except (openai.InternalServerError, openai.APIConnectionError, openai.APITimeoutError, openai.RateLimitError) as e:
             if attempt == max_attempts:
                 log.error("Embeddings request failed after %s attempts: %s", max_attempts, e)
