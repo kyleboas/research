@@ -4,15 +4,16 @@
 Deploy as a Railway service (see railway.toml) so you can authenticate
 from any browser by visiting your Railway URL at /login.
 
-On Railway (RAILWAY_PUBLIC_DOMAIN is set):
-  redirect_uri = https://<domain>/auth/callback
+On Railway (or any HTTPS host):
+  redirect_uri is derived from the incoming request's Host and
+  X-Forwarded-Proto headers — no environment variables required.
   After the user approves access OpenAI redirects directly back to the
   server's /auth/callback endpoint — no copy-paste required.
 
-Locally (no RAILWAY_PUBLIC_DOMAIN):
-  redirect_uri = http://127.0.0.1:1455/auth/callback (registered URI)
-  The browser redirects to that localhost URL (which shows an error), and
-  the user must paste the full redirect URL into the form at /login.
+Locally (http://127.0.0.1 or localhost):
+  Falls back to the registered localhost URI.  The browser redirects to
+  that address (which shows an error) and the user must paste the full
+  redirect URL into the form at /login.
 
 Usage (local):
     python server.py          # visit http://localhost:8080/login
@@ -29,22 +30,32 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import chatgpt_auth
 
-_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
-
-# When RAILWAY_PUBLIC_DOMAIN is set the server can receive the OAuth callback
-# directly, so use the Railway HTTPS URL as the redirect_uri.  Locally fall
-# back to the registered localhost URI and ask the user to paste it manually.
-if _domain:
-    REDIRECT_URI = f"https://{_domain}/auth/callback"
-else:
-    REDIRECT_URI = chatgpt_auth.REDIRECT_URI  # http://127.0.0.1:1455/auth/callback
-
 # ── In-memory PKCE state (single-user auth server) ───────────────────────────
 _pending: dict = {}
 _lock = threading.Lock()
 
 
+def _is_local_host(host: str) -> bool:
+    """Return True when the Host header looks like a local address."""
+    bare = host.split(":")[0]
+    return bare in ("127.0.0.1", "localhost", "0.0.0.0")
+
+
 class _Handler(BaseHTTPRequestHandler):
+
+    def _redirect_uri(self) -> str:
+        """Compute the OAuth redirect_uri from the incoming request headers.
+
+        Railway terminates TLS and forwards requests as HTTP, but sets the
+        X-Forwarded-Proto header to 'https'.  We use that header for the
+        scheme so no environment variable configuration is needed.
+        """
+        host = self.headers.get("Host", "127.0.0.1")
+        if _is_local_host(host):
+            # Local dev: use the registered localhost URI (required by OpenAI).
+            return chatgpt_auth.REDIRECT_URI
+        proto = self.headers.get("X-Forwarded-Proto", "https")
+        return f"{proto}://{host}/auth/callback"
 
     def do_GET(self):
         path = urlparse(self.path).path
@@ -67,14 +78,16 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_login(self):
         verifier, challenge = chatgpt_auth._generate_pkce()
         state = chatgpt_auth._random_state()
+        redirect_uri = self._redirect_uri()
 
         with _lock:
             _pending["verifier"] = verifier
             _pending["state"] = state
+            _pending["redirect_uri"] = redirect_uri
 
         params = urlencode({
             "client_id":             chatgpt_auth.CLIENT_ID,
-            "redirect_uri":          REDIRECT_URI,
+            "redirect_uri":          redirect_uri,
             "response_type":         "code",
             "scope":                 chatgpt_auth.SCOPES,
             "state":                 state,
@@ -83,20 +96,8 @@ class _Handler(BaseHTTPRequestHandler):
         })
         auth_url = f"{chatgpt_auth.AUTHORIZE_URL}?{params}"
 
-        if _domain:
-            # Railway: OAuth will redirect back to /auth/callback automatically.
-            body = f"""<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>ChatGPT Login</title></head>
-<body>
-<h2>ChatGPT OAuth Login</h2>
-<p>
-  <a href="{auth_url}" target="_blank">Click here to authenticate with OpenAI</a>
-</p>
-<p>After you approve access, you will be redirected back here automatically.</p>
-</body>
-</html>""".encode()
-        else:
+        host = self.headers.get("Host", "")
+        if _is_local_host(host):
             # Local: no server on 127.0.0.1:1455, ask user to paste the URL.
             body = f"""<!DOCTYPE html>
 <html>
@@ -121,6 +122,19 @@ class _Handler(BaseHTTPRequestHandler):
 </form>
 </body>
 </html>""".encode()
+        else:
+            # Remote: OAuth will redirect back to /auth/callback automatically.
+            body = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>ChatGPT Login</title></head>
+<body>
+<h2>ChatGPT OAuth Login</h2>
+<p>
+  <a href="{auth_url}" target="_blank">Click here to authenticate with OpenAI</a>
+</p>
+<p>After you approve access, you will be redirected back here automatically.</p>
+</body>
+</html>""".encode()
 
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -131,7 +145,7 @@ class _Handler(BaseHTTPRequestHandler):
     # ── GET /auth/callback ────────────────────────────────────────────────────
 
     def _handle_callback(self):
-        """Receive the OAuth redirect directly (Railway flow)."""
+        """Receive the OAuth redirect directly (remote/Railway flow)."""
         params = parse_qs(urlparse(self.path).query)
         code = (params.get("code") or [None])[0]
         state = (params.get("state") or [None])[0]
@@ -148,13 +162,14 @@ class _Handler(BaseHTTPRequestHandler):
         with _lock:
             expected_state = _pending.get("state")
             verifier = _pending.get("verifier")
+            redirect_uri = _pending.get("redirect_uri")
 
         if state != expected_state:
             self._respond(400, "text/plain", "OAuth state mismatch — possible CSRF")
             return
 
         try:
-            tokens = chatgpt_auth._exchange_code(code, verifier, REDIRECT_URI)
+            tokens = chatgpt_auth._exchange_code(code, verifier, redirect_uri)
         except Exception as exc:
             self._respond(500, "text/plain", f"Token exchange failed: {exc}")
             return
@@ -200,6 +215,7 @@ class _Handler(BaseHTTPRequestHandler):
         with _lock:
             expected_state = _pending.get("state")
             verifier       = _pending.get("verifier")
+            redirect_uri   = _pending.get("redirect_uri")
 
         try:
             code = chatgpt_auth._parse_code_from_url(redirect_url, expected_state)
@@ -208,7 +224,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            tokens = chatgpt_auth._exchange_code(code, verifier, REDIRECT_URI)
+            tokens = chatgpt_auth._exchange_code(code, verifier, redirect_uri)
         except Exception as exc:
             self._respond(500, "text/plain", f"Token exchange failed: {exc}")
             return
@@ -248,9 +264,8 @@ class _Handler(BaseHTTPRequestHandler):
 def main():
     port = int(os.environ.get("PORT", 8080))
     httpd = HTTPServer(("0.0.0.0", port), _Handler)
-    base = f"https://{_domain}" if _domain else f"http://127.0.0.1:{port}"
     print(f"Auth server listening on port {port}")
-    print(f"Visit {base}/login to authenticate with your ChatGPT subscription")
+    print(f"Visit /login to authenticate with your ChatGPT subscription")
     httpd.serve_forever()
 
 
