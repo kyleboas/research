@@ -27,6 +27,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+from db_conn import resolve_database_conninfo
+
 log = logging.getLogger("chatgpt_auth")
 
 # OAuth app registration for OpenAI Codex CLI
@@ -61,7 +63,8 @@ _DB_LOCK_ID = 20250306  # arbitrary stable advisory-lock id
 
 
 def _db_url():
-    return os.environ.get("DATABASE_URL")
+    conninfo, _ = resolve_database_conninfo()
+    return conninfo
 
 
 def _row_to_creds(row):
