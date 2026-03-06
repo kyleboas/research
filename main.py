@@ -34,22 +34,41 @@ OAI_MODEL      = os.environ.get("OPENAI_MODEL")      or _oai_cfg.get("model",   
 
 EMBED_MODEL = os.environ.get("EMBED_MODEL") or _CFG.get("embed_model", "text-embedding-3-small")
 
+
+def _oauth_login_hint():
+    domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    if domain:
+        return f"https://{domain}/login"
+    return "python main.py --login"
+
+
+def _has_oauth_credentials():
+    return bool(chatgpt_auth.load_credentials())
+
+
 def _make_oai_client():
     """Build an OpenAI client using the ChatGPT subscription OAuth token."""
     creds = chatgpt_auth.load_credentials()
     if not creds:
-        raise RuntimeError("No ChatGPT OAuth credentials found. Run: python main.py --login")
+        raise RuntimeError(f"No ChatGPT OAuth credentials found. Authenticate via: {_oauth_login_hint()}")
     token = chatgpt_auth.get_access_token()
     return openai.OpenAI(api_key=token)
 
 
 oai = None
+oai_unavailable = False
 
 
 def get_oai_client():
-    global oai
+    global oai, oai_unavailable
+    if oai_unavailable:
+        raise RuntimeError("ChatGPT OAuth credentials unavailable")
     if oai is None:
-        oai = _make_oai_client()
+        try:
+            oai = _make_oai_client()
+        except RuntimeError:
+            oai_unavailable = True
+            raise
     return oai
 
 CITATION_FMT = "Cite every claim as [S<source_id>:C<chunk_id>]. Never cite IDs not in the provided context."
@@ -204,7 +223,12 @@ def chunk_and_embed(conn, source_id, text):
     if not chunks:
         return
 
-    vectors = embed(chunks)
+    try:
+        vectors = embed(chunks)
+    except RuntimeError as e:
+        log.warning("Skipping embeddings for source_id=%s: %s. Authenticate via %s", source_id, e, _oauth_login_hint())
+        return
+
     with conn.cursor() as cur:
         for idx, (chunk, vec) in enumerate(zip(chunks, vectors)):
             cur.execute(
@@ -805,6 +829,10 @@ def run_ingest(conn):
 
 
 def run_detect(conn):
+    if not _has_oauth_credentials():
+        log.warning("Skipping detect step: missing ChatGPT OAuth credentials. Authenticate via %s", _oauth_login_hint())
+        return
+
     trend = detect_trends(conn)
     if trend:
         log.info("Detected trend: %s", trend)
@@ -814,6 +842,10 @@ def run_detect(conn):
 
 
 def run_report(conn):
+    if not _has_oauth_credentials():
+        log.warning("Skipping report step: missing ChatGPT OAuth credentials. Authenticate via %s", _oauth_login_hint())
+        return
+
     trend = load_state(conn, "pending_trend")
     if not trend:
         log.info("No pending trend found — skipping report")
@@ -853,6 +885,10 @@ def main():
             run_report(conn)
         else:
             run_ingest(conn)
+            if not _has_oauth_credentials():
+                log.warning("Skipping detect/report in --step all: missing ChatGPT OAuth credentials. Authenticate via %s", _oauth_login_hint())
+                return
+
             trend = detect_trends(conn)
             if trend:
                 log.info("Detected trend: %s", trend)
