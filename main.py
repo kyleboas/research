@@ -10,6 +10,7 @@ import argparse, json, logging, os, random, re, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
@@ -36,22 +37,60 @@ MODEL       = os.environ.get("MODEL")       or _CFG.get("model",       "gpt-4o")
 EMBED_MODEL = os.environ.get("EMBED_MODEL") or _CFG.get("embed_model", "text-embedding-3-small")
 
 
-def _make_client():
+def _normalize_cloudflare_base_urls(raw_url: str):
+    """Return SDK-safe chat/embeddings base URLs from a Cloudflare Gateway URL.
+
+    Supported inputs:
+    - .../openai
+    - .../openai/chat/completions
+    - .../compat/chat/completions
+
+    For compat chat endpoints, embeddings use the OpenAI-compatible /v1/embeddings
+    route, so we derive an embeddings base URL ending in /v1.
+    """
+    base = raw_url.rstrip("/")
+
+    if base.endswith("/openai/chat/completions"):
+        return base[: -len("/chat/completions")], base[: -len("/chat/completions")]
+    if base.endswith("/openai"):
+        return base, base
+    if base.endswith("/compat/chat/completions"):
+        prefix = base[: -len("/compat/chat/completions")]
+        return f"{prefix}/compat", f"{prefix}/v1"
+
+    return base, base
+
+
+def _make_client(base_url: str):
     """Build an OpenAI-compatible client routed through Cloudflare AI Gateway."""
     return openai.OpenAI(
         api_key=CLOUDFLARE_GATEWAY_TOKEN,
-        base_url=CLOUDFLARE_GATEWAY_URL,
+        base_url=base_url,
     )
 
 
-_client = None
+_chat_client = None
+_embed_client = None
+_chat_base_url, _embed_base_url = _normalize_cloudflare_base_urls(CLOUDFLARE_GATEWAY_URL)
 
 
-def get_client():
-    global _client
-    if _client is None:
-        _client = _make_client()
-    return _client
+log.info("Cloudflare chat base URL: %s", _chat_base_url)
+if _embed_base_url != _chat_base_url:
+    log.info("Cloudflare embeddings base URL: %s", _embed_base_url)
+
+
+def get_chat_client():
+    global _chat_client
+    if _chat_client is None:
+        _chat_client = _make_client(_chat_base_url)
+    return _chat_client
+
+
+def get_embed_client():
+    global _embed_client
+    if _embed_client is None:
+        _embed_client = _make_client(_embed_base_url)
+    return _embed_client
 
 
 CITATION_FMT = "Cite every claim as [S<source_id>:C<chunk_id>]. Never cite IDs not in the provided context."
@@ -170,7 +209,7 @@ def store_source(conn, item, source_type):
         return row[0] if row else None
 
 def embed(texts):
-    client = get_client()
+    client = get_embed_client()
     max_attempts = 5
     for attempt in range(1, max_attempts + 1):
         try:
@@ -254,7 +293,7 @@ def chunks_to_context(rows):
 
 def ask(system, user, model=None, max_tokens=4096):
     """Standard LLM call — system + user → text."""
-    client = get_client()
+    client = get_chat_client()
     resp = client.chat.completions.create(
         model=model or MODEL,
         max_completion_tokens=max_tokens,
@@ -272,7 +311,7 @@ def ask_thinking(system, user, budget_tokens=10000, max_tokens=16000):
     Returns (thinking_text, response_text). thinking_text is empty as reasoning
     is internal to the model.
     """
-    client = get_client()
+    client = get_chat_client()
     resp = client.chat.completions.create(
         model=LEAD_MODEL,
         max_completion_tokens=max_tokens,
@@ -314,7 +353,7 @@ def load_state(conn, key):
 # Trend detection
 # ══════════════════════════════════════════════
 
-def detect_trends(conn):
+def detect_trends(conn) -> tuple[Optional[str], bool]:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT title, LEFT(content, 500) FROM sources "
@@ -322,7 +361,7 @@ def detect_trends(conn):
         )
         recent = cur.fetchall()
     if not recent:
-        return None
+        return None, False
 
     summaries = "\n".join(f"- {t}: {c}..." for t, c in recent)
     with conn.cursor() as cur:
@@ -339,10 +378,10 @@ def detect_trends(conn):
             "players or teams. Something new that hasn't been widely adopted yet.\n\n"
             'Return JSON: {{"trend": "<10-20 word description>", "reasoning": "<why novel>"}}'
         )
-        return parse_json(text).get("trend")
+        return parse_json(text).get("trend"), False
     except Exception as e:
         log.warning("Trend detection failed: %s", e)
-        return None
+        return None, True
 
 # ══════════════════════════════════════════════
 # Step 1: LeadResearcher — decompose with extended thinking + effort scaling
@@ -814,7 +853,10 @@ def run_ingest(conn):
 
 
 def run_detect(conn):
-    trend = detect_trends(conn)
+    trend, had_error = detect_trends(conn)
+    if had_error:
+        log.error("Trend detection run failed due to upstream/model error")
+        raise SystemExit(1)
     if trend:
         log.info("Detected trend: %s", trend)
         save_state(conn, "pending_trend", trend)
@@ -853,7 +895,10 @@ def main():
             run_report(conn)
         else:
             run_ingest(conn)
-            trend = detect_trends(conn)
+            trend, had_error = detect_trends(conn)
+            if had_error:
+                log.error("Trend detection run failed due to upstream/model error")
+                raise SystemExit(1)
             if trend:
                 log.info("Detected trend: %s", trend)
                 generate_report(conn, trend)

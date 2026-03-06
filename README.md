@@ -59,6 +59,8 @@ Architecture mirrors [Anthropic's multi-agent research system](https://www.anthr
 
 LLM calls use your **ChatGPT subscription OAuth login** (no LLM API keys required).
 
+LLM calls are routed through Cloudflare AI Gateway, and the runtime normalizes gateway URLs so OpenAI SDK path appending does not produce malformed endpoints (for example duplicated `/chat/completions`).
+
 ## Setup
 
 1. Run `sql/schema.sql` in your Supabase SQL editor (enable pgvector first).
