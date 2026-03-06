@@ -309,8 +309,10 @@ def get_access_token():
     """
     creds = load_credentials()
     if not creds:
+        domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+        hint = f"https://{domain}/login" if domain else "python main.py --login"
         raise RuntimeError(
-            "No ChatGPT credentials found. Run: python main.py --login"
+            f"No ChatGPT credentials found. Authenticate via: {hint}"
         )
 
     if creds.get("expires", 0) > time.time() + 60:
