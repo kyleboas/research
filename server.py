@@ -4,16 +4,15 @@
 Deploy as a Railway service (see railway.toml) so you can authenticate
 from any browser by visiting your Railway URL at /login.
 
-On Railway (or any HTTPS host):
-  redirect_uri is derived from the incoming request's Host and
-  X-Forwarded-Proto headers — no environment variables required.
-  After the user approves access OpenAI redirects directly back to the
-  server's /auth/callback endpoint — no copy-paste required.
+The OAuth client ID (app_EMmlzZpjdHXp1aNBIkGGFMnO) is the OpenAI Codex CLI
+app, which only has http://127.0.0.1:1455/auth/callback registered as a valid
+redirect URI.  We must always send that exact URI to OpenAI; after the user
+approves access their browser is redirected to that localhost address (which
+shows a browser error) and the user copies the full URL from the address bar
+and pastes it into the form at /login.
 
-Locally (http://127.0.0.1 or localhost):
-  Falls back to the registered localhost URI.  The browser redirects to
-  that address (which shows an error) and the user must paste the full
-  redirect URL into the form at /login.
+This copy-paste flow works the same whether the server is running locally or
+on Railway.
 
 Usage (local):
     python server.py          # visit http://localhost:8080/login
@@ -44,18 +43,14 @@ def _is_local_host(host: str) -> bool:
 class _Handler(BaseHTTPRequestHandler):
 
     def _redirect_uri(self) -> str:
-        """Compute the OAuth redirect_uri from the incoming request headers.
+        """Return the registered OAuth redirect_uri.
 
-        Railway terminates TLS and forwards requests as HTTP, but sets the
-        X-Forwarded-Proto header to 'https'.  We use that header for the
-        scheme so no environment variable configuration is needed.
+        The client ID (app_EMmlzZpjdHXp1aNBIkGGFMnO) is the OpenAI Codex CLI
+        app, which only has http://127.0.0.1:1455/auth/callback registered.
+        We must always send that exact URI to OpenAI regardless of where this
+        server is running; the user pastes the resulting callback URL back in.
         """
-        host = self.headers.get("Host", "127.0.0.1")
-        if _is_local_host(host):
-            # Local dev: use the registered localhost URI (required by OpenAI).
-            return chatgpt_auth.REDIRECT_URI
-        proto = self.headers.get("X-Forwarded-Proto", "https")
-        return f"{proto}://{host}/auth/callback"
+        return chatgpt_auth.REDIRECT_URI
 
     def do_GET(self):
         path = urlparse(self.path).path
@@ -96,10 +91,10 @@ class _Handler(BaseHTTPRequestHandler):
         })
         auth_url = f"{chatgpt_auth.AUTHORIZE_URL}?{params}"
 
-        host = self.headers.get("Host", "")
-        if _is_local_host(host):
-            # Local: no server on 127.0.0.1:1455, ask user to paste the URL.
-            body = f"""<!DOCTYPE html>
+        # The registered redirect_uri is always localhost, so OpenAI will never
+        # redirect back to this server directly.  Ask the user to copy the
+        # callback URL from their browser's address bar and paste it below.
+        body = f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title>ChatGPT Login</title></head>
 <body>
@@ -120,19 +115,6 @@ class _Handler(BaseHTTPRequestHandler):
          placeholder="http://127.0.0.1:1455/auth/callback?code=..."><br><br>
   <button type="submit">Submit</button>
 </form>
-</body>
-</html>""".encode()
-        else:
-            # Remote: OAuth will redirect back to /auth/callback automatically.
-            body = f"""<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>ChatGPT Login</title></head>
-<body>
-<h2>ChatGPT OAuth Login</h2>
-<p>
-  <a href="{auth_url}" target="_blank">Click here to authenticate with OpenAI</a>
-</p>
-<p>After you approve access, you will be redirected back here automatically.</p>
 </body>
 </html>""".encode()
 
