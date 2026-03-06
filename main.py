@@ -68,7 +68,14 @@ def _make_oai_client():
     )
 
 
-oai = _make_oai_client()
+oai = None
+
+
+def get_oai_client():
+    global oai
+    if oai is None:
+        oai = _make_oai_client()
+    return oai
 
 CITATION_FMT = "Cite every claim as [S<source_id>:C<chunk_id>]. Never cite IDs not in the provided context."
 
@@ -186,7 +193,8 @@ def store_source(conn, item, source_type):
         return row[0] if row else None
 
 def embed(texts):
-    return [d.embedding for d in oai.embeddings.create(model=EMBED_MODEL, input=texts).data]
+    client = get_oai_client()
+    return [d.embedding for d in client.embeddings.create(model=EMBED_MODEL, input=texts).data]
 
 def vec_literal(vec):
     return "[" + ",".join(str(v) for v in vec) + "]"
@@ -249,7 +257,8 @@ def ask(system, user, model=None, max_tokens=4096):
     set in config.json.
     """
     if LLM_PROVIDER == "openai":
-        resp = oai.chat.completions.create(
+        client = get_oai_client()
+        resp = client.chat.completions.create(
             model=model or OAI_MODEL,
             max_completion_tokens=max_tokens,
             messages=[
@@ -279,7 +288,8 @@ def ask_thinking(system, user, budget_tokens=10000, max_tokens=16000):
     as reasoning is internal to the model.
     """
     if LLM_PROVIDER == "openai":
-        resp = oai.chat.completions.create(
+        client = get_oai_client()
+        resp = client.chat.completions.create(
             model=OAI_LEAD_MODEL,
             max_completion_tokens=max_tokens,
             reasoning_effort="high",
@@ -807,6 +817,13 @@ def _connect_db():
         raise SystemExit(2) from e
 
 
+def _ensure_schema(conn):
+    schema_path = ROOT / "sql" / "schema.sql"
+    with conn.cursor() as cur:
+        cur.execute(schema_path.read_text())
+    conn.commit()
+
+
 # ══════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════
@@ -868,6 +885,7 @@ def main():
 
     conn = _connect_db()
     try:
+        _ensure_schema(conn)
         if args.step == "ingest":
             run_ingest(conn)
         elif args.step == "detect":
