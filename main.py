@@ -176,12 +176,12 @@ def embed(texts):
         try:
             resp = client.embeddings.create(model=EMBED_MODEL, input=texts)
             return [d.embedding for d in resp.data]
-        except openai.InternalServerError as e:
+        except (openai.InternalServerError, openai.APIConnectionError, openai.APITimeoutError) as e:
             if attempt == max_attempts:
                 raise
             delay = min(8.0, 0.5 * (2 ** (attempt - 1))) + random.uniform(0, 0.2)
             log.warning(
-                "Embeddings request failed with internal server error (attempt %s/%s). Retrying in %.2fs: %s",
+                "Embeddings request failed (attempt %s/%s). Retrying in %.2fs: %s",
                 attempt,
                 max_attempts,
                 delay,
@@ -206,15 +206,30 @@ def chunk_and_embed(conn, source_id, text):
     if not chunks:
         return
 
-    vectors = embed(chunks)
+    vectors = None
+    try:
+        vectors = embed(chunks)
+    except openai.OpenAIError as e:
+        log.error(
+            "Embedding failed for source_id=%s, storing chunks without vectors: %s",
+            source_id,
+            e,
+        )
 
     with conn.cursor() as cur:
-        for idx, (chunk, vec) in enumerate(zip(chunks, vectors)):
-            cur.execute(
-                "INSERT INTO chunks (source_id, chunk_index, content, embedding) "
-                "VALUES (%s, %s, %s, %s::vector) ON CONFLICT (source_id, chunk_index) DO NOTHING",
-                (source_id, idx, chunk, vec_literal(vec)),
-            )
+        for idx, chunk in enumerate(chunks):
+            if vectors is not None:
+                cur.execute(
+                    "INSERT INTO chunks (source_id, chunk_index, content, embedding) "
+                    "VALUES (%s, %s, %s, %s::vector) ON CONFLICT (source_id, chunk_index) DO NOTHING",
+                    (source_id, idx, chunk, vec_literal(vectors[idx])),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO chunks (source_id, chunk_index, content) "
+                    "VALUES (%s, %s, %s) ON CONFLICT (source_id, chunk_index) DO NOTHING",
+                    (source_id, idx, chunk),
+                )
         conn.commit()
 
 # ══════════════════════════════════════════════
@@ -222,7 +237,23 @@ def chunk_and_embed(conn, source_id, text):
 # ══════════════════════════════════════════════
 
 def hybrid_search(conn, query, limit=20):
-    qvec = embed([query])[0]
+    try:
+        qvec = embed([query])[0]
+    except openai.OpenAIError as e:
+        log.warning("Embeddings unavailable for retrieval; using keyword-only search: %s", e)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT c.id AS chunk_id, c.source_id, c.content, s.title, s.url, "
+                "ts_rank_cd(c.search_tsv, plainto_tsquery('english', %s)) AS score "
+                "FROM chunks c "
+                "JOIN sources s ON s.id = c.source_id "
+                "WHERE c.search_tsv @@ plainto_tsquery('english', %s) "
+                "ORDER BY score DESC, c.id "
+                "LIMIT %s",
+                (query, query, limit),
+            )
+            return cur.fetchall()
+
     with conn.cursor() as cur:
         cur.execute(
             "SELECT h.chunk_id, h.source_id, h.content, s.title, s.url, h.score "
