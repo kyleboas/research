@@ -24,9 +24,22 @@ ROOT = Path(__file__).resolve().parent
 GATEWAY = os.environ["CLOUDFLARE_GATEWAY_URL"].rstrip("/")
 GATEWAY_TOKEN = os.environ["CLOUDFLARE_GATEWAY_TOKEN"]
 TRANSCRIPT_KEY = os.environ["TRANSCRIPT_API_KEY"]
-LEAD_MODEL = os.environ.get("CLAUDE_LEAD_MODEL", "claude-opus-4-6")
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
-EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-3-small")
+
+# ── Config file (config.json) overrides env-var model defaults ────────────────
+_cfg_path = ROOT / "config.json"
+_CFG: dict = json.loads(_cfg_path.read_text()) if _cfg_path.exists() else {}
+
+LLM_PROVIDER = _CFG.get("llm_provider", "anthropic")  # "anthropic" | "openai"
+
+_ant = _CFG.get("anthropic", {})
+LEAD_MODEL = os.environ.get("CLAUDE_LEAD_MODEL") or _ant.get("lead_model", "claude-opus-4-6")
+MODEL      = os.environ.get("CLAUDE_MODEL")      or _ant.get("model",       "claude-sonnet-4-6")
+
+_oai_cfg = _CFG.get("openai", {})
+OAI_LEAD_MODEL = _oai_cfg.get("lead_model", "o3")
+OAI_MODEL      = _oai_cfg.get("model",      "gpt-4o")
+
+EMBED_MODEL = os.environ.get("EMBED_MODEL") or _CFG.get("embed_model", "text-embedding-3-small")
 
 _gw_headers = {"cf-aig-authorization": f"Bearer {GATEWAY_TOKEN}"}
 claude = anthropic.Anthropic(
@@ -225,11 +238,27 @@ def chunks_to_context(rows):
     ], indent=2)
 
 # ══════════════════════════════════════════════
-# Claude helpers
+# LLM helpers — dispatch to Anthropic or OpenAI based on config.json
 # ══════════════════════════════════════════════
 
 def ask(system, user, model=None, max_tokens=4096):
-    """Standard Claude call — system + user → text."""
+    """Standard LLM call — system + user → text.
+
+    Routes to Anthropic (Claude) or OpenAI (GPT) depending on llm_provider
+    set in config.json.
+    """
+    if LLM_PROVIDER == "openai":
+        resp = oai.chat.completions.create(
+            model=model or OAI_MODEL,
+            max_completion_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user",   "content": user},
+            ],
+        )
+        return resp.choices[0].message.content
+
+    # anthropic (default)
     resp = claude.messages.create(
         model=model or MODEL,
         max_tokens=max_tokens,
@@ -238,19 +267,35 @@ def ask(system, user, model=None, max_tokens=4096):
     )
     return resp.content[0].text
 
-def ask_thinking(system, user, budget_tokens=10000, max_tokens=16000):
-    """Lead agent call with extended thinking enabled (Opus only).
 
-    Extended thinking gives the model a scratchpad to reason before responding,
-    matching Anthropic's LeadResearcher pattern for plan-then-act behavior.
+def ask_thinking(system, user, budget_tokens=10000, max_tokens=16000):
+    """Lead agent call with deep reasoning enabled.
+
+    Anthropic: extended thinking (claude-opus-4-6 scratchpad).
+    OpenAI: o3 / reasoning model with reasoning_effort=high.
+
+    Returns (thinking_text, response_text). thinking_text is empty for OpenAI
+    as reasoning is internal to the model.
     """
+    if LLM_PROVIDER == "openai":
+        resp = oai.chat.completions.create(
+            model=OAI_LEAD_MODEL,
+            max_completion_tokens=max_tokens,
+            reasoning_effort="high",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user",   "content": user},
+            ],
+        )
+        return "", resp.choices[0].message.content
+
+    # anthropic (default)
     resp = claude.messages.create(
         model=LEAD_MODEL,
         max_tokens=max_tokens,
         thinking={"type": "enabled", "budget_tokens": budget_tokens},
         messages=[{"role": "user", "content": f"<system>{system}</system>\n\n{user}"}],
     )
-    # Return (thinking_text, response_text) — thinking is the scratchpad
     thinking = ""
     response = ""
     for block in resp.content:
