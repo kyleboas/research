@@ -4,11 +4,15 @@
 Deploy as a Railway service (see railway.toml) so you can authenticate
 from any browser by visiting your Railway URL at /login.
 
-The OAuth flow always uses the registered redirect_uri
-(http://127.0.0.1:1455/auth/callback) so OpenAI's auth server accepts the
-request.  After authenticating, the browser is redirected to that localhost
-URL — which fails to load — so the page instructs the user to copy that URL
-from their address bar and paste it into the form on this server.
+On Railway (RAILWAY_PUBLIC_DOMAIN is set):
+  redirect_uri = https://<domain>/auth/callback
+  After the user approves access OpenAI redirects directly back to the
+  server's /auth/callback endpoint — no copy-paste required.
+
+Locally (no RAILWAY_PUBLIC_DOMAIN):
+  redirect_uri = http://127.0.0.1:1455/auth/callback (registered URI)
+  The browser redirects to that localhost URL (which shows an error), and
+  the user must paste the full redirect URL into the form at /login.
 
 Usage (local):
     python server.py          # visit http://localhost:8080/login
@@ -27,9 +31,13 @@ import chatgpt_auth
 
 _domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
 
-# Always use the registered redirect_uri so OpenAI's auth server accepts it.
-# The token exchange also uses this same URI (required by the spec).
-REDIRECT_URI = chatgpt_auth.REDIRECT_URI  # http://127.0.0.1:1455/auth/callback
+# When RAILWAY_PUBLIC_DOMAIN is set the server can receive the OAuth callback
+# directly, so use the Railway HTTPS URL as the redirect_uri.  Locally fall
+# back to the registered localhost URI and ask the user to paste it manually.
+if _domain:
+    REDIRECT_URI = f"https://{_domain}/auth/callback"
+else:
+    REDIRECT_URI = chatgpt_auth.REDIRECT_URI  # http://127.0.0.1:1455/auth/callback
 
 # ── In-memory PKCE state (single-user auth server) ───────────────────────────
 _pending: dict = {}
@@ -42,6 +50,8 @@ class _Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/login":
             self._handle_login()
+        elif path == "/auth/callback":
+            self._handle_callback()
         else:
             self._respond(404, "text/plain", "Not found")
 
@@ -73,7 +83,22 @@ class _Handler(BaseHTTPRequestHandler):
         })
         auth_url = f"{chatgpt_auth.AUTHORIZE_URL}?{params}"
 
-        body = f"""<!DOCTYPE html>
+        if _domain:
+            # Railway: OAuth will redirect back to /auth/callback automatically.
+            body = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>ChatGPT Login</title></head>
+<body>
+<h2>ChatGPT OAuth Login</h2>
+<p>
+  <a href="{auth_url}" target="_blank">Click here to authenticate with OpenAI</a>
+</p>
+<p>After you approve access, you will be redirected back here automatically.</p>
+</body>
+</html>""".encode()
+        else:
+            # Local: no server on 127.0.0.1:1455, ask user to paste the URL.
+            body = f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title>ChatGPT Login</title></head>
 <body>
@@ -97,6 +122,63 @@ class _Handler(BaseHTTPRequestHandler):
 </body>
 </html>""".encode()
 
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    # ── GET /auth/callback ────────────────────────────────────────────────────
+
+    def _handle_callback(self):
+        """Receive the OAuth redirect directly (Railway flow)."""
+        params = parse_qs(urlparse(self.path).query)
+        code = (params.get("code") or [None])[0]
+        state = (params.get("state") or [None])[0]
+        error = (params.get("error") or [None])[0]
+
+        if error:
+            self._respond(400, "text/plain", f"OAuth error: {error}")
+            return
+
+        if not code:
+            self._respond(400, "text/plain", "Missing authorization code in callback")
+            return
+
+        with _lock:
+            expected_state = _pending.get("state")
+            verifier = _pending.get("verifier")
+
+        if state != expected_state:
+            self._respond(400, "text/plain", "OAuth state mismatch — possible CSRF")
+            return
+
+        try:
+            tokens = chatgpt_auth._exchange_code(code, verifier, REDIRECT_URI)
+        except Exception as exc:
+            self._respond(500, "text/plain", f"Token exchange failed: {exc}")
+            return
+
+        creds = {
+            "access":    tokens["access_token"],
+            "refresh":   tokens.get("refresh_token"),
+            "expires":   time.time() + tokens["expires_in"],
+            "accountId": chatgpt_auth._extract_account_id(tokens["access_token"]),
+        }
+        chatgpt_auth.save_credentials(creds)
+
+        with _lock:
+            _pending.clear()
+
+        body = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Authenticated</title></head>
+<body>
+<h2>Authentication successful!</h2>
+<p>Authenticated as <code>{creds['accountId']}</code>.</p>
+<p>Credentials saved. You can close this tab.</p>
+</body>
+</html>""".encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
