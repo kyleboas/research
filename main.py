@@ -6,13 +6,13 @@ Architecture mirrors Anthropic's production research system:
   → Synthesis → Sufficiency evaluation → optional re-plan → CitationAgent → Revision
 """
 
-import argparse, json, logging, os, random, re, time
+import argparse, http.cookiejar, json, logging, os, random, re, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener, HTTPCookieProcessor, urlopen
 import xml.etree.ElementTree as ET
 
 import feedparser
@@ -24,6 +24,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 ROOT = Path(__file__).resolve().parent
 TRANSCRIPT_KEY = os.environ["TRANSCRIPT_API_KEY"]
+NEWSBLUR_USERNAME = os.environ.get("NEWSBLUR_USERNAME", "")
+NEWSBLUR_PASSWORD = os.environ.get("NEWSBLUR_PASSWORD", "")
 
 # ── Cloudflare AI Gateway ──────────────────────────────────────────────────────
 CLOUDFLARE_GATEWAY_URL = os.environ["CLOUDFLARE_GATEWAY_URL"]
@@ -168,6 +170,75 @@ def fetch_rss(name, url):
             "content": content,
             "key": f"rss:{item_id}",
         })
+
+    return items
+
+# ══════════════════════════════════════════════
+# NewsBlur ingestion
+# ══════════════════════════════════════════════
+
+NEWSBLUR_BASE = "https://www.newsblur.com"
+
+def _newsblur_session():
+    """Return an authenticated opener with a NewsBlur session cookie, or None on failure."""
+    jar = http.cookiejar.CookieJar()
+    opener = build_opener(HTTPCookieProcessor(jar))
+    body = urlencode({"username": NEWSBLUR_USERNAME, "password": NEWSBLUR_PASSWORD}).encode()
+    req = Request(f"{NEWSBLUR_BASE}/api/login", data=body, headers={"User-Agent": "ResearchBot/1.0"})
+    try:
+        with opener.open(req, timeout=15) as r:
+            resp = json.loads(r.read())
+        if not resp.get("authenticated"):
+            log.warning("NewsBlur login failed: %s", resp.get("errors", "unknown"))
+            return None
+    except Exception as e:
+        log.warning("NewsBlur login error: %s", e)
+        return None
+    return opener
+
+def fetch_newsblur():
+    """Fetch unread stories from all NewsBlur subscribed feeds."""
+    if not NEWSBLUR_USERNAME or not NEWSBLUR_PASSWORD:
+        return []
+
+    opener = _newsblur_session()
+    if opener is None:
+        return []
+
+    # Get subscribed feeds
+    try:
+        with opener.open(f"{NEWSBLUR_BASE}/reader/feeds", timeout=15) as r:
+            data = json.loads(r.read())
+    except Exception as e:
+        log.warning("NewsBlur feeds fetch failed: %s", e)
+        return []
+
+    feed_ids = list((data.get("feeds") or {}).keys())
+    log.info("NewsBlur: %d subscribed feeds", len(feed_ids))
+
+    items = []
+    for feed_id in feed_ids:
+        try:
+            url = f"{NEWSBLUR_BASE}/reader/feed/{feed_id}?page=1"
+            with opener.open(url, timeout=15) as r:
+                feed_data = json.loads(r.read())
+        except Exception as e:
+            log.warning("NewsBlur feed %s failed: %s", feed_id, e)
+            continue
+
+        for story in (feed_data.get("stories") or []):
+            title = (story.get("story_title") or "").strip()
+            story_url = (story.get("story_permalink") or "").strip()
+            content = strip_html(story.get("story_content") or story.get("story_summary") or "")
+            story_hash = story.get("story_hash") or story.get("id") or story_url
+            if not content:
+                continue
+            items.append({
+                "title": title,
+                "url": story_url,
+                "content": content,
+                "key": f"newsblur:{story_hash}",
+            })
 
     return items
 
@@ -863,6 +934,11 @@ def run_ingest(conn):
             if sid:
                 chunk_and_embed(conn, sid, item["content"])
                 new += 1
+    for item in fetch_newsblur():
+        sid = store_source(conn, item, "newsblur")
+        if sid:
+            chunk_and_embed(conn, sid, item["content"])
+            new += 1
     log.info("Ingested %d new sources", new)
 
 
