@@ -934,8 +934,8 @@ def main():
     parser.add_argument(
         "--step",
         choices=["ingest", "detect", "report", "all"],
-        default="all",
-        help="Pipeline step to run (default: all)",
+        default="ingest",
+        help="Pipeline step to run (default: ingest)",
     )
     args = parser.parse_args()
 
@@ -950,15 +950,8 @@ def main():
             run_report(conn)
         else:
             run_ingest(conn)
-            trend, had_error = detect_trends(conn)
-            if had_error:
-                log.error("Trend detection run failed due to response-format/parsing error")
-                raise SystemExit(1)
-            if trend:
-                log.info("Detected trend: %s", trend)
-                generate_report(conn, trend)
-            else:
-                log.info("No novel trend detected this run")
+            run_detect(conn)
+            run_report(conn)
     finally:
         conn.close()
 
