@@ -9,13 +9,13 @@ Architecture mirrors Anthropic's production research system:
 import argparse, json, logging, os, random, re, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, build_opener, HTTPCookieProcessor
 import xml.etree.ElementTree as ET
 
-import feedparser
 import openai, psycopg
 from db_conn import resolve_database_conninfo
 
@@ -24,6 +24,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 ROOT = Path(__file__).resolve().parent
 TRANSCRIPT_KEY = os.environ["TRANSCRIPT_API_KEY"]
+NEWSBLUR_USERNAME = os.environ["NEWSBLUR_USERNAME"]
+NEWSBLUR_PASSWORD = os.environ["NEWSBLUR_PASSWORD"]
 
 # ── Cloudflare AI Gateway ──────────────────────────────────────────────────────
 CLOUDFLARE_GATEWAY_URL = os.environ["CLOUDFLARE_GATEWAY_URL"]
@@ -109,14 +111,8 @@ def get_embed_client():
 CITATION_FMT = "Cite every claim as [S<source_id>:C<chunk_id>]. Never cite IDs not in the provided context."
 
 # ══════════════════════════════════════════════
-# Feed parsing
+# Feed parsing (YouTube only)
 # ══════════════════════════════════════════════
-
-def parse_feeds(path):
-    text = path.read_text()
-    names = [m.group(1) for m in re.finditer(r"^-\s+\*\*(.+?)\*\*", text, re.M)]
-    urls = [m.group(1) for m in re.finditer(r"^\s+-\s+Feed:\s*(\S+)", text, re.M)]
-    return list(zip(names, urls))
 
 def parse_youtube(path):
     text = path.read_text()
@@ -128,59 +124,58 @@ def strip_html(html):
     return re.sub(r"<[^>]+>", "", html).strip()
 
 # ══════════════════════════════════════════════
-# RSS ingestion
+# NewsBlur RSS ingestion
 # ══════════════════════════════════════════════
-
-NS = {"atom": "http://www.w3.org/2005/Atom", "content": "http://purl.org/rss/1.0/modules/content/"}
-
-def _txt(el):
-    return (el.text or "").strip() if el is not None else ""
 
 def _get(url, headers=None, timeout=15):
     req = Request(url, headers=headers or {"User-Agent": "ResearchBot/1.0"})
     with urlopen(req, timeout=timeout) as r:
         return r.read()
 
-def fetch_rss(name, url):
+def _newsblur_session():
+    """Login to NewsBlur and return a cookie-enabled URL opener."""
+    jar = CookieJar()
+    opener = build_opener(HTTPCookieProcessor(jar))
+    data = urlencode({"username": NEWSBLUR_USERNAME, "password": NEWSBLUR_PASSWORD}).encode()
+    req = Request("https://newsblur.com/api/login", data=data)
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    req.add_header("User-Agent", "ResearchBot/1.0")
+    with opener.open(req, timeout=15) as r:
+        result = json.loads(r.read())
+    if not result.get("authenticated"):
+        raise RuntimeError(f"NewsBlur login failed: {result.get('errors', result)}")
+    return opener
+
+def fetch_newsblur():
+    """Fetch recent stories from NewsBlur river of news."""
     try:
-        xml_bytes = _get(url, headers={
-            "User-Agent": "Mozilla/5.0 (compatible; ResearchBot/1.0)",
-            "Accept": "application/rss+xml, application/atom+xml, */*",
-        })
-        parsed = feedparser.parse(xml_bytes)
+        opener = _newsblur_session()
     except Exception as e:
-        log.warning("Feed %s failed: %s", name, e)
+        log.warning("NewsBlur login failed: %s", e)
         return []
-
-    if getattr(parsed, "bozo", 0) and getattr(parsed, "bozo_exception", None):
-        log.info("Feed %s parsed with recoverable issues: %s", name, parsed.bozo_exception)
-
+    try:
+        req = Request("https://newsblur.com/reader/river_stories?read_filter=all&order=newest&limit=100")
+        req.add_header("User-Agent", "ResearchBot/1.0")
+        with opener.open(req, timeout=30) as r:
+            data = json.loads(r.read())
+    except Exception as e:
+        log.warning("NewsBlur river fetch failed: %s", e)
+        return []
     items = []
-
-    for entry in parsed.entries[:10]:
-        item_url = (entry.get("link") or "").strip()
-        title = (entry.get("title") or "").strip()
-
-        content_value = ""
-        if entry.get("content"):
-            first = entry.get("content")[0] if isinstance(entry.get("content"), list) else None
-            if isinstance(first, dict):
-                content_value = first.get("value", "")
-        if not content_value:
-            content_value = entry.get("summary", "") or entry.get("description", "")
-
-        content = strip_html(content_value)
+    for story in data.get("stories", []):
+        title = (story.get("story_title") or "").strip()
+        url = (story.get("story_permalink") or "").strip()
+        content = strip_html(story.get("story_content") or story.get("story_summary") or "")
+        story_id = str(story.get("id") or url).strip()
+        feed_id = str(story.get("story_feed_id") or "").strip()
         if not content:
             continue
-
-        item_id = (entry.get("id") or entry.get("guid") or item_url).strip()
         items.append({
             "title": title,
-            "url": item_url,
+            "url": url,
             "content": content,
-            "key": f"rss:{item_id}",
+            "key": f"nb:{feed_id}:{story_id}",
         })
-
     return items
 
 # ══════════════════════════════════════════════
@@ -866,12 +861,11 @@ def _ensure_schema(conn):
 
 def run_ingest(conn):
     new = 0
-    for name, url in parse_feeds(ROOT / "feeds" / "rss.md"):
-        for item in fetch_rss(name, url):
-            sid = store_source(conn, item, "rss")
-            if sid:
-                chunk_and_embed(conn, sid, item["content"])
-                new += 1
+    for item in fetch_newsblur():
+        sid = store_source(conn, item, "rss")
+        if sid:
+            chunk_and_embed(conn, sid, item["content"])
+            new += 1
     for name, cid in parse_youtube(ROOT / "feeds" / "youtube.md"):
         for item in fetch_youtube(name, cid):
             sid = store_source(conn, item, "youtube")
