@@ -792,11 +792,11 @@ def _connect_db():
     conninfo, reason = resolve_database_conninfo()
     if not conninfo:
         if reason == "missing_hostname":
-            log.error("DATABASE_URL is set but does not include a hostname, so psycopg falls back to a local unix socket.")
-            log.error("In Railway, use a Postgres reference variable (for example: ${{pgvector.DATABASE_URL}}) or provide PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE.")
+            log.error("A Postgres URL env var is set but does not include a hostname, so psycopg falls back to a local unix socket.")
+            log.error("In Railway, use a Postgres reference variable (for example: ${{pgvector.DATABASE_URL}} or ${{pgvector.DATABASE_PRIVATE_URL}}) or provide PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE.")
         else:
             log.error("No usable Postgres connection config found.")
-            log.error("Set DATABASE_URL to a full managed Postgres URL, or provide PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE.")
+            log.error("Set DATABASE_URL/DATABASE_PRIVATE_URL/DATABASE_PUBLIC_URL to a full managed Postgres URL, or provide PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE.")
         raise SystemExit(2)
 
     try:

@@ -11,6 +11,13 @@ import re
 from urllib.parse import parse_qs, urlparse
 
 
+_URL_ENV_KEYS = (
+    "DATABASE_URL",
+    "DATABASE_PRIVATE_URL",
+    "DATABASE_PUBLIC_URL",
+)
+
+
 def _has_hostname(conninfo: str) -> bool:
     """Return True when conninfo clearly contains a hostname.
 
@@ -44,20 +51,45 @@ def _build_from_pg_vars() -> str | None:
     )
 
 
+def _clean_env_value(value: str) -> str:
+    value = value.strip()
+    if value and "${{" in value and "}}" in value:
+        return ""
+    return value
+
+
+def _first_valid_url() -> tuple[str | None, str | None]:
+    """Return (value, reason) from URL-like env vars.
+
+    reason can be:
+    - None: valid value with hostname
+    - missing_hostname: at least one URL-like var was set but had no host
+    - None with value=None: no URL-like var was usable/set
+    """
+    saw_hostless = False
+    for key in _URL_ENV_KEYS:
+        raw = _clean_env_value(os.environ.get(key, ""))
+        if not raw:
+            continue
+        if _has_hostname(raw):
+            return raw, None
+        saw_hostless = True
+
+    if saw_hostless:
+        return None, "missing_hostname"
+    return None, None
+
+
 def resolve_database_conninfo() -> tuple[str | None, str | None]:
     """Return (conninfo, reason_if_missing)."""
-    raw = os.environ.get("DATABASE_URL", "").strip()
-
-    if raw and "${{" in raw and "}}" in raw:
-        raw = ""
-
-    if raw and _has_hostname(raw):
+    raw, reason = _first_valid_url()
+    if raw:
         return raw, None
 
     fallback = _build_from_pg_vars()
     if fallback:
         return fallback, None
 
-    if raw:
+    if reason == "missing_hostname":
         return None, "missing_hostname"
     return None, "missing_database_url"
