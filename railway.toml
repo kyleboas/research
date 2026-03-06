@@ -43,9 +43,12 @@ restartPolicyType = "never"
 #   Railway will set RAILWAY_PUBLIC_DOMAIN automatically.
 #
 #   Visit https://<your-domain>/login once to authenticate with your
-#   ChatGPT subscription. Credentials are written to ~/.codex/auth.json
-#   and shared with the pipeline services via a Railway Volume mounted
-#   at the same path.
+#   ChatGPT subscription. Credentials are written to the shared pgvector
+#   database (auth_tokens table) and automatically available to all
+#   pipeline services — no Railway Volume required.
+#
+#   Run sql/schema.sql first if you haven't already (it creates the
+#   auth_tokens table alongside the existing tables).
 #
 # Variables needed (same as other services):
 #   CLOUDFLARE_GATEWAY_URL, CLOUDFLARE_GATEWAY_TOKEN, DATABASE_URL, TRANSCRIPT_API_KEY

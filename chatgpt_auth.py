@@ -19,6 +19,7 @@ import hashlib
 import http.server
 import json
 import logging
+import os
 import secrets
 import time
 import webbrowser
@@ -55,18 +56,72 @@ def _random_state():
 
 # ── Credential storage ────────────────────────────────────────────────────────
 
+_DB_KEY = "chatgpt"
+_DB_LOCK_ID = 20250306  # arbitrary stable advisory-lock id
+
+
+def _db_url():
+    return os.environ.get("DATABASE_URL")
+
+
+def _row_to_creds(row):
+    return {"access": row[0], "refresh": row[1], "expires": row[2], "accountId": row[3]}
+
+
 def load_credentials():
-    """Return stored credentials dict or None."""
+    """Return stored credentials dict or None.
+
+    Reads from the pgvector DB when DATABASE_URL is set; falls back to
+    ~/.codex/auth.json for local development.
+    """
+    url = _db_url()
+    if url:
+        try:
+            import psycopg
+            with psycopg.connect(url) as conn:
+                row = conn.execute(
+                    "SELECT access_token, refresh_token, expires_at, account_id "
+                    "FROM auth_tokens WHERE key = %s",
+                    (_DB_KEY,),
+                ).fetchone()
+                if row:
+                    return _row_to_creds(row)
+        except Exception as exc:
+            log.warning("DB credential load failed: %s", exc)
+    # local fallback
     if CREDS_PATH.exists():
         try:
             return json.loads(CREDS_PATH.read_text())
         except (json.JSONDecodeError, OSError):
-            return None
+            pass
     return None
 
 
 def save_credentials(creds):
-    """Persist credentials to disk (mode 0600)."""
+    """Persist credentials to DB (when DATABASE_URL is set) or disk."""
+    url = _db_url()
+    if url:
+        try:
+            import psycopg
+            with psycopg.connect(url) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO auth_tokens (key, access_token, refresh_token, expires_at, account_id)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (key) DO UPDATE SET
+                        access_token = EXCLUDED.access_token,
+                        refresh_token = EXCLUDED.refresh_token,
+                        expires_at    = EXCLUDED.expires_at,
+                        account_id    = EXCLUDED.account_id,
+                        updated_at    = NOW()
+                    """,
+                    (_DB_KEY, creds["access"], creds["refresh"], creds["expires"], creds["accountId"]),
+                )
+                conn.commit()
+            return
+        except Exception as exc:
+            log.warning("DB credential save failed, falling back to file: %s", exc)
+    # local fallback
     CREDS_PATH.parent.mkdir(parents=True, exist_ok=True)
     CREDS_PATH.write_text(json.dumps(creds, indent=2))
     CREDS_PATH.chmod(0o600)
@@ -163,37 +218,83 @@ def _exchange_code(code, verifier, redirect_uri=None):
 
 
 def _refresh(creds):
-    """Refresh tokens under an exclusive file lock.
+    """Refresh tokens under an exclusive lock.
 
-    Re-reads credentials after acquiring the lock in case another
-    process already refreshed while we were waiting.
+    Uses a PostgreSQL advisory lock when DATABASE_URL is set so all Railway
+    services coordinate without a shared filesystem.  Falls back to an
+    exclusive file lock for local development.
     """
-    lock_path = CREDS_PATH.with_suffix(".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "w") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            # Another process may have refreshed while we waited
-            current = load_credentials()
-            if current and current.get("expires", 0) > time.time() + 60:
-                return current
+    url = _db_url()
+    if url:
+        import psycopg
+        with psycopg.connect(url) as conn:
+            conn.execute("SELECT pg_advisory_lock(%s)", (_DB_LOCK_ID,))
+            try:
+                # Another service may have refreshed while we were waiting
+                row = conn.execute(
+                    "SELECT access_token, refresh_token, expires_at, account_id "
+                    "FROM auth_tokens WHERE key = %s",
+                    (_DB_KEY,),
+                ).fetchone()
+                if row and row[2] > time.time() + 60:
+                    return _row_to_creds(row)
 
-            tokens = _post_token({
-                "grant_type": "refresh_token",
-                "client_id": CLIENT_ID,
-                "refresh_token": creds["refresh"],
-            })
-            new_creds = {
-                "access": tokens["access_token"],
-                "refresh": tokens.get("refresh_token", creds["refresh"]),
-                "expires": time.time() + tokens["expires_in"],
-                "accountId": creds["accountId"],
-            }
-            save_credentials(new_creds)
-            log.info("ChatGPT token refreshed (accountId=%s)", new_creds["accountId"])
-            return new_creds
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+                tokens = _post_token({
+                    "grant_type": "refresh_token",
+                    "client_id": CLIENT_ID,
+                    "refresh_token": creds["refresh"],
+                })
+                new_creds = {
+                    "access": tokens["access_token"],
+                    "refresh": tokens.get("refresh_token", creds["refresh"]),
+                    "expires": time.time() + tokens["expires_in"],
+                    "accountId": creds["accountId"],
+                }
+                conn.execute(
+                    """
+                    INSERT INTO auth_tokens (key, access_token, refresh_token, expires_at, account_id)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (key) DO UPDATE SET
+                        access_token = EXCLUDED.access_token,
+                        refresh_token = EXCLUDED.refresh_token,
+                        expires_at    = EXCLUDED.expires_at,
+                        account_id    = EXCLUDED.account_id,
+                        updated_at    = NOW()
+                    """,
+                    (_DB_KEY, new_creds["access"], new_creds["refresh"], new_creds["expires"], new_creds["accountId"]),
+                )
+                conn.commit()
+                log.info("ChatGPT token refreshed (accountId=%s)", new_creds["accountId"])
+                return new_creds
+            finally:
+                conn.execute("SELECT pg_advisory_unlock(%s)", (_DB_LOCK_ID,))
+    else:
+        # local fallback: exclusive file lock
+        lock_path = CREDS_PATH.with_suffix(".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                current = load_credentials()
+                if current and current.get("expires", 0) > time.time() + 60:
+                    return current
+
+                tokens = _post_token({
+                    "grant_type": "refresh_token",
+                    "client_id": CLIENT_ID,
+                    "refresh_token": creds["refresh"],
+                })
+                new_creds = {
+                    "access": tokens["access_token"],
+                    "refresh": tokens.get("refresh_token", creds["refresh"]),
+                    "expires": time.time() + tokens["expires_in"],
+                    "accountId": creds["accountId"],
+                }
+                save_credentials(new_creds)
+                log.info("ChatGPT token refreshed (accountId=%s)", new_creds["accountId"])
+                return new_creds
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
