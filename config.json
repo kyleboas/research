@@ -1,8 +1,5 @@
 {
-  "_comment": "OpenAI models used via ChatGPT OAuth subscription (no LLM API keys).",
-  "openai": {
-    "lead_model": "o3",
-    "model": "gpt-4o"
-  },
+  "lead_model": "o3",
+  "model": "gpt-4o",
   "embed_model": "text-embedding-3-small"
 }

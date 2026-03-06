@@ -19,32 +19,13 @@ builder = "nixpacks"
 #
 # Set these variables in Railway's Variables tab for all three services:
 #
-#   DATABASE_URL       ${{pgvector.DATABASE_URL}}   ← Railway reference variable
-#   TRANSCRIPT_API_KEY your-transcript-api-key
+#   DATABASE_URL              ${{pgvector.DATABASE_URL}}   ← Railway reference variable
+#   TRANSCRIPT_API_KEY        your-transcript-api-key
+#   CLOUDFLARE_GATEWAY_URL    https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_name}/openai
+#   CLOUDFLARE_GATEWAY_TOKEN  your-openai-api-key
 #
 # After first deploy, run sql/schema.sql via Railway's Postgres query console
 # (or psql) to create the tables.
 
 startCommand = "python main.py --step ${PIPELINE_STEP:-all}"
 restartPolicyType = "never"
-
-# ── Auth server service ────────────────────────────────────────────────────────
-# Add a fifth service in the Railway dashboard pointing to this repo:
-#
-#   Service: auth
-#     Start command: python server.py
-#     (No cron — runs as a persistent web service)
-#
-#   Enable "Public Networking" so Railway assigns a domain.
-#   Railway will set RAILWAY_PUBLIC_DOMAIN automatically.
-#
-#   Visit https://<your-domain>/login once to authenticate with your
-#   ChatGPT subscription. Credentials are written to the shared pgvector
-#   database (auth_tokens table) and automatically available to all
-#   pipeline services — no Railway Volume required.
-#
-#   Run sql/schema.sql first if you haven't already (it creates the
-#   auth_tokens table alongside the existing tables).
-#
-# Variables needed (same as other services):
-#   DATABASE_URL, TRANSCRIPT_API_KEY

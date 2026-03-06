@@ -38,15 +38,6 @@ CREATE TABLE IF NOT EXISTS pipeline_state (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS auth_tokens (
-    key TEXT PRIMARY KEY,
-    access_token TEXT NOT NULL,
-    refresh_token TEXT,
-    expires_at DOUBLE PRECISION NOT NULL,
-    account_id TEXT,
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
 -- Indexes for hybrid search
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX IF NOT EXISTS idx_chunks_tsv ON chunks USING GIN (search_tsv);

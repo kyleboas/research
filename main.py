@@ -15,7 +15,6 @@ from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
 import openai, psycopg
-import chatgpt_auth
 from db_conn import resolve_database_conninfo
 
 log = logging.getLogger("research")
@@ -24,68 +23,36 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 ROOT = Path(__file__).resolve().parent
 TRANSCRIPT_KEY = os.environ["TRANSCRIPT_API_KEY"]
 
+# ── Cloudflare AI Gateway ──────────────────────────────────────────────────────
+CLOUDFLARE_GATEWAY_URL = os.environ["CLOUDFLARE_GATEWAY_URL"]
+CLOUDFLARE_GATEWAY_TOKEN = os.environ["CLOUDFLARE_GATEWAY_TOKEN"]
+
 # ── Config file (config.json) overrides env-var model defaults ────────────────
 _cfg_path = ROOT / "config.json"
 _CFG: dict = json.loads(_cfg_path.read_text()) if _cfg_path.exists() else {}
 
-_oai_cfg = _CFG.get("openai", {})
-OAI_LEAD_MODEL = os.environ.get("OPENAI_LEAD_MODEL") or _oai_cfg.get("lead_model", "o3")
-OAI_MODEL      = os.environ.get("OPENAI_MODEL")      or _oai_cfg.get("model",      "gpt-4o")
-
+LEAD_MODEL  = os.environ.get("LEAD_MODEL")  or _CFG.get("lead_model",  "o3")
+MODEL       = os.environ.get("MODEL")       or _CFG.get("model",       "gpt-4o")
 EMBED_MODEL = os.environ.get("EMBED_MODEL") or _CFG.get("embed_model", "text-embedding-3-small")
 
 
-def _oauth_login_hint():
-    domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
-    if domain:
-        return f"https://{domain}/login"
-    return "python main.py --login"
+def _make_client():
+    """Build an OpenAI-compatible client routed through Cloudflare AI Gateway."""
+    return openai.OpenAI(
+        api_key=CLOUDFLARE_GATEWAY_TOKEN,
+        base_url=CLOUDFLARE_GATEWAY_URL,
+    )
 
 
-def _has_oauth_credentials():
-    return bool(chatgpt_auth.load_credentials())
+_client = None
 
 
-def _should_serve_login(step):
-    """Return True when this process should run the OAuth login web server.
+def get_client():
+    global _client
+    if _client is None:
+        _client = _make_client()
+    return _client
 
-    Railway web services need to bind to PORT. If credentials are missing and this
-    process is asked to run LLM-dependent steps, we serve /login instead of exiting
-    so the user can authenticate first.
-    """
-    if os.environ.get("AUTO_SERVE_LOGIN", "1") == "0":
-        return False
-    if not os.environ.get("PORT"):
-        return False
-    if step not in {"all", "detect", "report"}:
-        return False
-    return not _has_oauth_credentials()
-
-
-def _make_oai_client():
-    """Build an OpenAI client using the ChatGPT subscription OAuth token."""
-    creds = chatgpt_auth.load_credentials()
-    if not creds:
-        raise RuntimeError(f"No ChatGPT OAuth credentials found. Authenticate via: {_oauth_login_hint()}")
-    token = chatgpt_auth.get_access_token()
-    return openai.OpenAI(api_key=token)
-
-
-oai = None
-oai_unavailable = False
-
-
-def get_oai_client():
-    global oai, oai_unavailable
-    if oai_unavailable:
-        raise RuntimeError("ChatGPT OAuth credentials unavailable")
-    if oai is None:
-        try:
-            oai = _make_oai_client()
-        except RuntimeError:
-            oai_unavailable = True
-            raise
-    return oai
 
 CITATION_FMT = "Cite every claim as [S<source_id>:C<chunk_id>]. Never cite IDs not in the provided context."
 
@@ -203,7 +170,7 @@ def store_source(conn, item, source_type):
         return row[0] if row else None
 
 def embed(texts):
-    client = get_oai_client()
+    client = get_client()
     max_attempts = 5
     for attempt in range(1, max_attempts + 1):
         try:
@@ -239,11 +206,7 @@ def chunk_and_embed(conn, source_id, text):
     if not chunks:
         return
 
-    try:
-        vectors = embed(chunks)
-    except RuntimeError as e:
-        log.warning("Skipping embeddings for source_id=%s: %s. Authenticate via %s", source_id, e, _oauth_login_hint())
-        return
+    vectors = embed(chunks)
 
     with conn.cursor() as cur:
         for idx, (chunk, vec) in enumerate(zip(chunks, vectors)):
@@ -283,9 +246,9 @@ def chunks_to_context(rows):
 
 def ask(system, user, model=None, max_tokens=4096):
     """Standard LLM call — system + user → text."""
-    client = get_oai_client()
+    client = get_client()
     resp = client.chat.completions.create(
-        model=model or OAI_MODEL,
+        model=model or MODEL,
         max_completion_tokens=max_tokens,
         messages=[
             {"role": "system", "content": system},
@@ -298,14 +261,12 @@ def ask(system, user, model=None, max_tokens=4096):
 def ask_thinking(system, user, budget_tokens=10000, max_tokens=16000):
     """Lead agent call with deep reasoning enabled.
 
-    Uses OpenAI reasoning models via ChatGPT OAuth subscription.
-
-    Returns (thinking_text, response_text). thinking_text is empty for OpenAI
-    as reasoning is internal to the model.
+    Returns (thinking_text, response_text). thinking_text is empty as reasoning
+    is internal to the model.
     """
-    client = get_oai_client()
+    client = get_client()
     resp = client.chat.completions.create(
-        model=OAI_LEAD_MODEL,
+        model=LEAD_MODEL,
         max_completion_tokens=max_tokens,
         reasoning_effort="high",
         messages=[
@@ -845,10 +806,6 @@ def run_ingest(conn):
 
 
 def run_detect(conn):
-    if not _has_oauth_credentials():
-        log.warning("Skipping detect step: missing ChatGPT OAuth credentials. Authenticate via %s", _oauth_login_hint())
-        return
-
     trend = detect_trends(conn)
     if trend:
         log.info("Detected trend: %s", trend)
@@ -858,10 +815,6 @@ def run_detect(conn):
 
 
 def run_report(conn):
-    if not _has_oauth_credentials():
-        log.warning("Skipping report step: missing ChatGPT OAuth credentials. Authenticate via %s", _oauth_login_hint())
-        return
-
     trend = load_state(conn, "pending_trend")
     if not trend:
         log.info("No pending trend found — skipping report")
@@ -879,22 +832,7 @@ def main():
         default="all",
         help="Pipeline step to run (default: all)",
     )
-    parser.add_argument(
-        "--login",
-        action="store_true",
-        help="Authenticate with ChatGPT subscription via OAuth (PKCE) and store credentials",
-    )
     args = parser.parse_args()
-
-    if args.login:
-        chatgpt_auth.login()
-        return
-
-    if _should_serve_login(args.step):
-        log.warning("Missing ChatGPT OAuth credentials; starting login server at /login before running pipeline")
-        import server as auth_server
-        auth_server.main()
-        return
 
     conn = _connect_db()
     try:
@@ -907,10 +845,6 @@ def main():
             run_report(conn)
         else:
             run_ingest(conn)
-            if not _has_oauth_credentials():
-                log.warning("Skipping detect/report in --step all: missing ChatGPT OAuth credentials. Authenticate via %s", _oauth_login_hint())
-                return
-
             trend = detect_trends(conn)
             if trend:
                 log.info("Detected trend: %s", trend)
