@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
+import feedparser
 import openai, psycopg
 from db_conn import resolve_database_conninfo
 
@@ -134,27 +135,40 @@ def fetch_rss(name, url):
             "User-Agent": "Mozilla/5.0 (compatible; ResearchBot/1.0)",
             "Accept": "application/rss+xml, application/atom+xml, */*",
         })
-        root = ET.fromstring(xml_bytes)
+        parsed = feedparser.parse(xml_bytes)
     except Exception as e:
         log.warning("Feed %s failed: %s", name, e)
         return []
 
+    if getattr(parsed, "bozo", 0) and getattr(parsed, "bozo_exception", None):
+        log.info("Feed %s parsed with recoverable issues: %s", name, parsed.bozo_exception)
+
     items = []
-    if root.tag.endswith("feed"):  # Atom
-        for entry in root.findall("atom:entry", NS)[:10]:
-            link = entry.find("atom:link[@rel='alternate']", NS) or entry.find("atom:link", NS)
-            href = (link.attrib.get("href", "") if link is not None else "").strip()
-            content = strip_html(_txt(entry.find("atom:content", NS)) or _txt(entry.find("atom:summary", NS)))
-            if content:
-                items.append({"title": _txt(entry.find("atom:title", NS)), "url": href,
-                              "content": content, "key": f"rss:{href or _txt(entry.find('atom:id', NS))}"})
-    else:  # RSS 2.0
-        for item in root.findall("./channel/item")[:10]:
-            content = strip_html(_txt(item.find("content:encoded", NS)) or _txt(item.find("description")))
-            item_url = _txt(item.find("link"))
-            if content:
-                items.append({"title": _txt(item.find("title")), "url": item_url,
-                              "content": content, "key": f"rss:{_txt(item.find('guid')) or item_url}"})
+
+    for entry in parsed.entries[:10]:
+        item_url = (entry.get("link") or "").strip()
+        title = (entry.get("title") or "").strip()
+
+        content_value = ""
+        if entry.get("content"):
+            first = entry.get("content")[0] if isinstance(entry.get("content"), list) else None
+            if isinstance(first, dict):
+                content_value = first.get("value", "")
+        if not content_value:
+            content_value = entry.get("summary", "") or entry.get("description", "")
+
+        content = strip_html(content_value)
+        if not content:
+            continue
+
+        item_id = (entry.get("id") or entry.get("guid") or item_url).strip()
+        items.append({
+            "title": title,
+            "url": item_url,
+            "content": content,
+            "key": f"rss:{item_id}",
+        })
+
     return items
 
 # ══════════════════════════════════════════════
