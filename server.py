@@ -12,6 +12,15 @@ PORT = int(os.environ.get("PORT", 8080))
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
+    def _ensure_trend_candidate_scoring_columns(self, cur):
+        cur.execute(
+            """
+            ALTER TABLE trend_candidates
+                ADD COLUMN IF NOT EXISTS feedback_adjustment INT NOT NULL DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS final_score INT
+            """
+        )
+
     def _send_json(self, payload, status=200):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
@@ -43,6 +52,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
         with psycopg.connect(conninfo) as conn:
             with conn.cursor() as cur:
+                self._ensure_trend_candidate_scoring_columns(cur)
+
                 cur.execute(
                     """
                     SELECT title, url, source_type, LEFT(content, 255), created_at
@@ -230,6 +241,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
         with psycopg.connect(conninfo) as conn:
             with conn.cursor() as cur:
+                self._ensure_trend_candidate_scoring_columns(cur)
+
                 cur.execute("SELECT trend FROM trend_candidates WHERE id = %s", (trend_candidate_id,))
                 row = cur.fetchone()
                 if not row:
