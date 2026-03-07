@@ -13,7 +13,7 @@ from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Optional
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen, build_opener, HTTPCookieProcessor
 
 import openai, psycopg
@@ -216,6 +216,28 @@ def parse_youtube(path):
 def strip_html(html):
     return re.sub(r"<[^>]+>", "", html).strip()
 
+
+TRACKING_QUERY_PREFIXES = ("utm_", "fbclid", "gclid", "mc_", "ref", "source")
+
+
+def canonicalize_url(url: str) -> str:
+    """Return a canonical URL used for ingest diagnostics.
+
+    This does not affect dedupe behavior (which is currently source_key based);
+    it exists to make duplicate/new-source logs easier to reason about.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    parsed = urlsplit(raw)
+    clean_query = [
+        (k, v)
+        for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if not any(k.lower().startswith(prefix) for prefix in TRACKING_QUERY_PREFIXES)
+    ]
+    normalized_path = parsed.path.rstrip("/") or "/"
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), normalized_path, urlencode(clean_query), ""))
+
 # ══════════════════════════════════════════════
 # NewsBlur RSS ingestion
 # ══════════════════════════════════════════════
@@ -308,13 +330,73 @@ def fetch_newsblur():
 # YouTube ingestion
 # ══════════════════════════════════════════════
 
+TRANSCRIPT_API_BASE_URL = "https://transcriptapi.com/api/v2"
+RETRYABLE_HTTP_STATUSES = {408, 429, 503}
+NON_RETRYABLE_HTTP_STATUSES = {400, 401, 402, 404, 422}
+
+
+def _http_error_details(err):
+    body = ""
+    headers = {}
+    try:
+        body = err.read().decode("utf-8", errors="replace")
+    except Exception:
+        body = ""
+    try:
+        headers = dict(err.headers.items()) if err.headers else {}
+    except Exception:
+        headers = {}
+    return body, headers
+
+
 def _transcriptapi_get(path, params):
-    url = f"https://transcriptapi.com/api/v2{path}?{urlencode(params)}"
-    data = _get(
+    url = f"{TRANSCRIPT_API_BASE_URL}{path}?{urlencode(params)}"
+    req = Request(
         url,
         headers={"Authorization": f"Bearer {TRANSCRIPT_KEY}", "Accept": "application/json"},
     )
-    return json.loads(data)
+
+    max_attempts = 4
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with urlopen(req, timeout=30) as response:
+                return json.loads(response.read())
+        except HTTPError as e:
+            status = int(e.code)
+            body, headers = _http_error_details(e)
+
+            if path == "/youtube/channel/latest" and status == 403:
+                log.error(
+                    "TranscriptAPI channel/latest returned 403 channel=%s headers=%s body=%s",
+                    params.get("channel"),
+                    headers,
+                    body[:3000],
+                )
+
+            if status in RETRYABLE_HTTP_STATUSES and attempt < max_attempts:
+                delay = min(8.0, 0.5 * (2 ** (attempt - 1))) + random.uniform(0, 0.2)
+                log.warning(
+                    "TranscriptAPI retryable failure path=%s status=%s attempt=%s/%s; retrying in %.2fs",
+                    path,
+                    status,
+                    attempt,
+                    max_attempts,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+
+            # Log full details for non-retryable and undocumented errors.
+            level = log.warning if status in NON_RETRYABLE_HTTP_STATUSES else log.error
+            level(
+                "TranscriptAPI request failed path=%s status=%s params=%s headers=%s body=%s",
+                path,
+                status,
+                params,
+                headers,
+                body[:3000],
+            )
+            raise
 
 
 def _extract_transcript_text(data):
@@ -327,12 +409,19 @@ def _extract_transcript_text(data):
     return ""
 
 
+def _resolve_channel_id(channel):
+    try:
+        payload = _transcriptapi_get("/youtube/channel/resolve", {"input": channel})
+    except Exception as e:
+        log.warning("YouTube channel resolve failed for %s: %s", channel, e)
+        return channel
+
+    resolved = str(payload.get("channel_id") or payload.get("channelId") or "").strip()
+    return resolved or channel
+
+
 def _iter_channel_latest_videos(payload):
-    videos = payload.get("videos")
-    if not isinstance(videos, list):
-        videos = payload.get("items")
-    if not isinstance(videos, list):
-        videos = payload.get("data")
+    videos = payload.get("results")
     if not isinstance(videos, list):
         return []
     return videos
@@ -341,7 +430,7 @@ def _iter_channel_latest_videos(payload):
 def _video_id(video):
     if not isinstance(video, dict):
         return ""
-    for key in ("videoId", "video_id", "id"):
+    for key in ("video_id", "videoId", "id"):
         value = str(video.get(key) or "").strip()
         if value:
             return value
@@ -359,12 +448,28 @@ def _video_title(video):
 
 
 def fetch_youtube(name, channel_id):
+    resolved_channel_id = _resolve_channel_id(channel_id)
     try:
-        latest = _transcriptapi_get("/youtube/channel/latest", {"channel": channel_id})
-        videos = _iter_channel_latest_videos(latest)
+        latest = _transcriptapi_get("/youtube/channel/latest", {"channel": resolved_channel_id})
     except Exception as e:
-        log.warning("YouTube discovery failed for %s (%s): %s", name, channel_id, e)
-        return []
+        log.warning(
+            "YouTube discovery failed for %s (%s; resolved=%s): %s",
+            name,
+            channel_id,
+            resolved_channel_id,
+            e,
+        )
+        return [], True
+
+    videos = _iter_channel_latest_videos(latest)
+    if not videos:
+        log.info(
+            "YouTube discovery returned no videos for %s (%s). result_count=%s keys=%s",
+            name,
+            resolved_channel_id,
+            latest.get("result_count"),
+            sorted(latest.keys()),
+        )
 
     items = []
     for video in videos:
@@ -375,14 +480,16 @@ def fetch_youtube(name, channel_id):
         try:
             transcript_data = _transcriptapi_get(
                 "/youtube/transcript",
-                {"video_url": f"https://www.youtube.com/watch?v={vid}"},
+                {
+                    "video_url": vid,
+                    "format": "text",
+                    "include_timestamp": "false",
+                    "send_metadata": "true",
+                },
             )
             transcript = _extract_transcript_text(transcript_data)
         except HTTPError as e:
-            if e.code == 403:
-                log.warning("Transcript 403 rejected channel=%s video_id=%s title=%r", name, vid, title)
-            else:
-                log.warning("Transcript %s failed for channel=%s title=%r: %s", vid, name, title, e)
+            log.warning("Transcript %s failed for channel=%s title=%r status=%s", vid, name, title, e.code)
             continue
         except Exception as e:
             log.warning("Transcript %s failed for channel=%s title=%r: %s", vid, name, title, e)
@@ -390,17 +497,22 @@ def fetch_youtube(name, channel_id):
         if transcript.strip():
             items.append(
                 {
-                    "title": title,
+                    "title": title or str(transcript_data.get("title") or "").strip(),
                     "url": f"https://www.youtube.com/watch?v={vid}",
                     "content": transcript.strip(),
-                    "key": f"yt:{channel_id}:{vid}",
+                    "key": f"yt:{resolved_channel_id}:{vid}",
                 }
             )
-    return items
+    return items, False
 
 # ══════════════════════════════════════════════
 # Storage & embedding
 # ══════════════════════════════════════════════
+
+def source_exists_by_key(conn, source_key):
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM sources WHERE source_key = %s", (source_key,))
+        return cur.fetchone() is not None
 
 def store_source(conn, item, source_type):
     with conn.cursor() as cur:
@@ -1519,19 +1631,63 @@ def _ensure_schema(conn):
 
 def run_ingest(conn):
     new = 0
+    candidates_found = 0
+    articles_extracted = 0
+    duplicates = 0
+    skipped = 0
+    youtube_discovery_failures = 0
+
     for item in fetch_newsblur():
+        candidates_found += 1
+        articles_extracted += 1
+        dedupe_key = item["key"]
+        canonical_url = canonicalize_url(item.get("url", ""))
+        existed = source_exists_by_key(conn, dedupe_key)
         sid = store_source(conn, item, "rss")
         if sid:
+            log.info("Ingest decision=new source_type=rss dedupe_key=%s canonical_url=%s", dedupe_key, canonical_url)
             chunk_and_embed(conn, sid, item["content"])
             new += 1
+        elif existed:
+            duplicates += 1
+            log.info("Ingest decision=duplicate source_type=rss dedupe_key=%s canonical_url=%s", dedupe_key, canonical_url)
+        else:
+            skipped += 1
+            log.info("Ingest decision=skipped source_type=rss dedupe_key=%s canonical_url=%s", dedupe_key, canonical_url)
+
     for name, cid in parse_youtube(ROOT / "feeds" / "youtube.md"):
-        for item in fetch_youtube(name, cid):
+        yt_items, discovery_failed = fetch_youtube(name, cid)
+        if discovery_failed:
+            youtube_discovery_failures += 1
+            continue
+        for item in yt_items:
+            candidates_found += 1
+            dedupe_key = item["key"]
+            canonical_url = canonicalize_url(item.get("url", ""))
+            existed = source_exists_by_key(conn, dedupe_key)
             sid = store_source(conn, item, "youtube")
             if sid:
+                log.info("Ingest decision=new source_type=youtube dedupe_key=%s canonical_url=%s", dedupe_key, canonical_url)
                 chunk_and_embed(conn, sid, item["content"])
                 new += 1
+            elif existed:
+                duplicates += 1
+                log.info("Ingest decision=duplicate source_type=youtube dedupe_key=%s canonical_url=%s", dedupe_key, canonical_url)
+            else:
+                skipped += 1
+                log.info("Ingest decision=skipped source_type=youtube dedupe_key=%s canonical_url=%s", dedupe_key, canonical_url)
+
     save_state(conn, "last_ingest_new_sources", str(new))
     save_state(conn, "last_ingest_completed_at", datetime.now(UTC).isoformat())
+    log.info(
+        "Ingest summary: candidates_found=%d articles_extracted=%d duplicates=%d new_inserts=%d skipped=%d youtube_discovery_failures=%d",
+        candidates_found,
+        articles_extracted,
+        duplicates,
+        new,
+        skipped,
+        youtube_discovery_failures,
+    )
     log.info("Ingested %d new sources", new)
     return new
 
