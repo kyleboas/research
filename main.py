@@ -392,13 +392,50 @@ def store_source(conn, item, source_type):
         conn.commit()
         return row[0] if row else None
 
+def _sanitize_embedding_inputs(texts):
+    """Normalize embedding inputs to OpenAI schema-safe strings.
+
+    Returns a tuple of:
+      - cleaned_inputs: non-empty strings that can be sent to the API
+      - index_map: original positions for each cleaned input
+      - total_inputs: total number of original items
+    """
+    if isinstance(texts, str):
+        raw_items = [texts]
+    else:
+        raw_items = list(texts or [])
+
+    cleaned_inputs = []
+    index_map = []
+    for idx, item in enumerate(raw_items):
+        value = "" if item is None else str(item)
+        value = value.strip()
+        if not value:
+            continue
+        cleaned_inputs.append(value)
+        index_map.append(idx)
+
+    return cleaned_inputs, index_map, len(raw_items)
+
+
 def embed(texts):
+    cleaned_inputs, index_map, total_inputs = _sanitize_embedding_inputs(texts)
+    if total_inputs == 0:
+        log.warning("Embedding skipped: no inputs provided")
+        return []
+    if not cleaned_inputs:
+        log.error("Embedding skipped: all inputs were empty after normalization")
+        return [None] * total_inputs
+
     client = get_embed_client()
     max_attempts = 5
     for attempt in range(1, max_attempts + 1):
         try:
-            resp = client.embeddings.create(model=EMBED_MODEL, input=texts)
-            return [d.embedding for d in resp.data]
+            resp = client.embeddings.create(model=EMBED_MODEL, input=cleaned_inputs)
+            dense = [None] * total_inputs
+            for source_idx, embedding_obj in zip(index_map, resp.data):
+                dense[source_idx] = embedding_obj.embedding
+            return dense
         except openai.BadRequestError as e:
             log.error("Embeddings request rejected (bad request — check model/config): %s", e)
             return None
@@ -439,6 +476,13 @@ def chunk_and_embed(conn, source_id, text):
     all_patterns = []
     with conn.cursor() as cur:
         for chunk_rec, vec in zip(chunk_records, vectors):
+            if vec is None:
+                log.warning(
+                    "Skipping empty chunk for source_id=%s chunk_index=%s before embedding",
+                    source_id,
+                    chunk_rec["chunk_index"],
+                )
+                continue
             idx = chunk_rec["chunk_index"]
             content = chunk_rec["content"]
             ctx = chunk_rec.get("tactical_context", {})
