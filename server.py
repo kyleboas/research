@@ -12,6 +12,29 @@ PORT = int(os.environ.get("PORT", 8080))
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
+    def _resolve_feedback_storage_value(self, cur, delta):
+        """Use a feedback value compatible with existing DB constraints.
+
+        Some environments may have an older CHECK constraint that allows only
+        {-1, 1}. Newer schemas permit {-5, -1, 1, 5}. This method keeps writes
+        compatible with either shape.
+        """
+        cur.execute(
+            """
+            SELECT pg_get_constraintdef(c.oid)
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            WHERE t.relname = 'trend_feedback'
+              AND c.contype = 'c'
+              AND pg_get_constraintdef(c.oid) LIKE '%feedback_value%'
+            """
+        )
+        for (constraint_def,) in cur.fetchall():
+            if "-5" in constraint_def and "5" in constraint_def:
+                return delta
+
+        return 1 if delta > 0 else -1
+
     def _ensure_trend_candidate_scoring_columns(self, cur):
         cur.execute(
             """
@@ -271,9 +294,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     return
 
                 trend_text = row[0] or ""
+                feedback_value = self._resolve_feedback_storage_value(cur, delta)
                 cur.execute(
                     "INSERT INTO trend_feedback (trend_candidate_id, trend_text, feedback_value, note) VALUES (%s, %s, %s, %s)",
-                    (trend_candidate_id, trend_text, delta, note or None),
+                    (trend_candidate_id, trend_text, feedback_value, note or None),
                 )
                 cur.execute(
                     """
