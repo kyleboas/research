@@ -68,19 +68,21 @@ LLM calls are routed through Cloudflare AI Gateway, and the runtime normalizes g
 3. `pip install -r requirements.txt`
 4. Run ingest manually once: `python main.py --step ingest`
 5. Detect candidates: `python main.py --step detect`
-6. Generate a report from top pending candidate: `python main.py --step report`
+6. Generate a report from top pending candidate above threshold: `python main.py --step report --min-report-score 90`
 
 ## Cron (recommended split schedules)
 
+In this setup, ingest/detect run every 6 hours, while report runs once daily and only proceeds when at least one pending candidate meets `--min-report-score`.
+
 ```bash
-0 * * * * cd /path/to/research && /path/to/python main.py --step ingest >> logs/ingest.log 2>&1
-0 */6 * * * cd /path/to/research && /path/to/python main.py --step detect --min-new-sources-for-detect 5 >> logs/detect.log 2>&1
-0 1 * * * cd /path/to/research && /path/to/python main.py --step report >> logs/report.log 2>&1
+0 */6 * * * cd /path/to/research && /path/to/python main.py --step ingest >> logs/ingest.log 2>&1
+10 */6 * * * cd /path/to/research && /path/to/python main.py --step detect --min-new-sources-for-detect 3 >> logs/detect.log 2>&1
+20 1 * * * cd /path/to/research && /path/to/python main.py --step report --min-report-score 90 >> logs/report.log 2>&1
 ```
 
 `python main.py` defaults to `--step ingest`.
 
-`--step all` now runs ingest + detect only. To explicitly allow same-process reporting, pass `--allow-report-after-detect`.
+`--step all` now runs ingest + detect only. To explicitly allow same-process reporting, pass `--allow-report-after-detect` (and optionally `--min-report-score`).
 
 ## Feeds
 

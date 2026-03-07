@@ -1009,17 +1009,18 @@ def run_detect(conn, min_new_sources=0):
         log.info("No novel trends detected this run")
 
 
-def run_report(conn):
+def run_report(conn, min_score=90):
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT id, trend FROM trend_candidates WHERE status = 'pending' ORDER BY score DESC LIMIT 1"
+            "SELECT id, trend, score FROM trend_candidates WHERE status = 'pending' AND score >= %s ORDER BY score DESC LIMIT 1",
+            (min_score,),
         )
         row = cur.fetchone()
     if not row:
-        log.info("No pending trend candidates — skipping report")
+        log.info("No pending trend candidates with score >= %d — skipping report", min_score)
         return
-    candidate_id, trend = row
-    log.info("Generating report for trend: %s", trend)
+    candidate_id, trend, candidate_score = row
+    log.info("Generating report for trend: %s (score: %d)", trend, candidate_score)
     generate_report(conn, trend)
     with conn.cursor() as cur:
         cur.execute(
@@ -1045,11 +1046,19 @@ def main():
         help="Skip detect when latest ingest inserted fewer than this many new sources (default: 0)",
     )
     parser.add_argument(
+        "--min-report-score",
+        type=int,
+        default=90,
+        help="Minimum candidate score required to run report generation (default: 90)",
+    )
+    parser.add_argument(
         "--allow-report-after-detect",
         action="store_true",
         help="When using --step all, also run report in the same process (disabled by default)",
     )
     args = parser.parse_args()
+    if not 0 <= args.min_report_score <= 100:
+        parser.error("--min-report-score must be between 0 and 100")
 
     conn = _connect_db()
     try:
@@ -1059,12 +1068,12 @@ def main():
         elif args.step == "detect":
             run_detect(conn, min_new_sources=args.min_new_sources_for_detect)
         elif args.step == "report":
-            run_report(conn)
+            run_report(conn, min_score=args.min_report_score)
         else:
             run_ingest(conn)
             run_detect(conn, min_new_sources=args.min_new_sources_for_detect)
             if args.allow_report_after_detect:
-                run_report(conn)
+                run_report(conn, min_score=args.min_report_score)
             else:
                 log.info(
                     "Step 'all' now runs ingest+detect only. "
