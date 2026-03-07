@@ -6,7 +6,7 @@ Architecture mirrors Anthropic's production research system:
   → Synthesis → Sufficiency evaluation → optional re-plan → CitationAgent → Revision
 """
 
-import argparse, json, logging, math, os, random, re, time
+import argparse, json, logging, math, os, platform, random, re, socket, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from http.cookiejar import CookieJar
@@ -15,6 +15,7 @@ from typing import Optional
 from urllib.error import HTTPError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen, build_opener, HTTPCookieProcessor
+import xml.etree.ElementTree as ET
 
 import openai, psycopg
 from db_conn import resolve_database_conninfo
@@ -209,9 +210,30 @@ SYS_SUFFICIENCY = (
 
 def parse_youtube(path):
     text = path.read_text()
+    pairs = []
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith(">"):
+            continue
+        match = re.match(r"^(.+?):\s*(https?://\S+)$", line)
+        if match:
+            name = match.group(1).strip()
+            channel_source = match.group(2).strip()
+            channel_id = _extract_uc_channel_id(channel_source)
+            if channel_id:
+                pairs.append((name, channel_id))
+            else:
+                log.warning("YouTube config line has no UC channel id: %s", raw_line)
+
+    if pairs:
+        return pairs
+
+    # Backward-compatible fallback for older markdown list format.
     names = [m.group(1) for m in re.finditer(r"^-\s+\*\*(.+?)\*\*", text, re.M)]
-    cids = [m.group(1) for m in re.finditer(r"^\s+-\s+Channel ID:\s*(\S+)", text, re.M)]
+    cids = [m.group(1) for m in re.finditer(r"^\s+-\s+(?:Canonical\s+)?Channel ID:\s*(\S+)", text, re.M)]
     return list(zip(names, cids))
+
 
 def strip_html(html):
     return re.sub(r"<[^>]+>", "", html).strip()
@@ -332,7 +354,61 @@ def fetch_newsblur():
 
 TRANSCRIPT_API_BASE_URL = "https://transcriptapi.com/api/v2"
 RETRYABLE_HTTP_STATUSES = {408, 429, 503}
-NON_RETRYABLE_HTTP_STATUSES = {400, 401, 402, 404, 422}
+NON_RETRYABLE_HTTP_STATUSES = {400, 401, 402, 403, 404, 422}
+YOUTUBE_RSS_BASE_URL = "https://www.youtube.com/feeds/videos.xml"
+TRANSCRIPT_API_USER_AGENT = "ResearchBot/1.0"
+YOUTUBE_RSS_USER_AGENT = "ResearchBot/1.0"
+
+_OUTBOUND_IP_CACHE = None
+
+
+class TranscriptApiHardDeny(Exception):
+    """TranscriptAPI returned a hard deny that should never be retried."""
+
+
+def _host_container_metadata():
+    return {
+        "hostname": socket.gethostname(),
+        "platform": platform.platform(),
+        "container_id": os.environ.get("HOSTNAME", ""),
+    }
+
+
+def _get_outbound_ip():
+    global _OUTBOUND_IP_CACHE
+    if _OUTBOUND_IP_CACHE is not None:
+        return _OUTBOUND_IP_CACHE
+
+    try:
+        req = Request("https://api64.ipify.org?format=json", headers={"User-Agent": TRANSCRIPT_API_USER_AGENT})
+        with urlopen(req, timeout=3) as response:
+            payload = json.loads(response.read())
+        _OUTBOUND_IP_CACHE = str(payload.get("ip") or "unknown")
+    except Exception:
+        _OUTBOUND_IP_CACHE = "unknown"
+    return _OUTBOUND_IP_CACHE
+
+
+def _is_hard_deny(status, body):
+    if status != 403:
+        return False
+    normalized = (body or "").lower()
+    return (
+        "error_code=1010" in normalized
+        or '"error_code":1010' in normalized
+        or '"error_code": 1010' in normalized
+        or "retryable=false" in normalized
+        or '"retryable":false' in normalized
+        or '"retryable": false' in normalized
+    )
+
+
+def _write_support_packet(payload):
+    out_dir = ROOT / "logs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    packet_file = out_dir / "transcriptapi_support.jsonl"
+    with packet_file.open("a", encoding="utf-8") as fp:
+        fp.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
 
 
 def _http_error_details(err):
@@ -351,9 +427,14 @@ def _http_error_details(err):
 
 def _transcriptapi_get(path, params):
     url = f"{TRANSCRIPT_API_BASE_URL}{path}?{urlencode(params)}"
+    request_headers = {
+        "Authorization": f"Bearer {TRANSCRIPT_KEY}",
+        "Accept": "application/json",
+        "User-Agent": TRANSCRIPT_API_USER_AGENT,
+    }
     req = Request(
         url,
-        headers={"Authorization": f"Bearer {TRANSCRIPT_KEY}", "Accept": "application/json"},
+        headers=request_headers,
     )
 
     max_attempts = 4
@@ -364,14 +445,29 @@ def _transcriptapi_get(path, params):
         except HTTPError as e:
             status = int(e.code)
             body, headers = _http_error_details(e)
-
-            if path == "/youtube/channel/latest" and status == 403:
+            timestamp = datetime.now(UTC).isoformat()
+            if _is_hard_deny(status, body):
+                support_payload = {
+                    "classification": "HARD_DENY/NON_RETRYABLE",
+                    "ray_id": headers.get("CF-RAY") or headers.get("cf-ray") or "",
+                    "timestamp": timestamp,
+                    "endpoint": path,
+                    "request_params": params,
+                    "response_body": body[:3000],
+                    "user_agent": request_headers.get("User-Agent"),
+                    "host_container_metadata": _host_container_metadata(),
+                }
+                _write_support_packet(support_payload)
                 log.error(
-                    "TranscriptAPI channel/latest returned 403 channel=%s headers=%s body=%s",
-                    params.get("channel"),
-                    headers,
-                    body[:3000],
+                    "TranscriptAPI hard deny classification=HARD_DENY/NON_RETRYABLE ray_id=%s timestamp=%s endpoint=%s channel_id=%s outbound_ip=%s user_agent=%s",
+                    support_payload["ray_id"],
+                    timestamp,
+                    path,
+                    params.get("channel_id") or params.get("channel") or "",
+                    _get_outbound_ip(),
+                    support_payload["user_agent"],
                 )
+                raise TranscriptApiHardDeny("TranscriptAPI hard deny")
 
             if status in RETRYABLE_HTTP_STATUSES and attempt < max_attempts:
                 delay = min(8.0, 0.5 * (2 ** (attempt - 1))) + random.uniform(0, 0.2)
@@ -399,6 +495,33 @@ def _transcriptapi_get(path, params):
             raise
 
 
+def _youtube_rss_latest_videos(channel_id, limit=10):
+    feed_url = f"{YOUTUBE_RSS_BASE_URL}?{urlencode({'channel_id': channel_id})}"
+    req = Request(feed_url, headers={"User-Agent": YOUTUBE_RSS_USER_AGENT})
+    with urlopen(req, timeout=30) as response:
+        xml_body = response.read()
+
+    root = ET.fromstring(xml_body)
+    ns = {
+        "atom": "http://www.w3.org/2005/Atom",
+        "yt": "http://www.youtube.com/xml/schemas/2015",
+    }
+    videos = []
+    for entry in root.findall("atom:entry", ns):
+        video_id = (entry.findtext("yt:videoId", default="", namespaces=ns) or "").strip()
+        if not video_id:
+            continue
+        title = (entry.findtext("atom:title", default="", namespaces=ns) or "").strip()
+        link = ""
+        link_node = entry.find("atom:link", ns)
+        if link_node is not None:
+            link = str(link_node.attrib.get("href") or "").strip()
+        videos.append({"id": video_id, "title": title, "url": link})
+        if len(videos) >= limit:
+            break
+    return videos
+
+
 def _extract_transcript_text(data):
     for key in ("transcript", "text", "content"):
         value = data.get(key)
@@ -409,15 +532,80 @@ def _extract_transcript_text(data):
     return ""
 
 
-def _resolve_channel_id(channel):
-    try:
-        payload = _transcriptapi_get("/youtube/channel/resolve", {"input": channel})
-    except Exception as e:
-        log.warning("YouTube channel resolve failed for %s: %s", channel, e)
-        return channel
+def _extract_uc_channel_id(raw):
+    value = str(raw or "").strip()
+    if re.match(r"^UC[\w-]{20,}$", value):
+        return value
+    match = re.search(r"/channel/(UC[\w-]{20,})", value)
+    if match:
+        return match.group(1)
+    return ""
 
-    resolved = str(payload.get("channel_id") or payload.get("channelId") or "").strip()
-    return resolved or channel
+
+def _resolve_uc_channel_id(source):
+    candidate = _extract_uc_channel_id(source)
+    if candidate:
+        return candidate
+
+    cleaned = str(source or "").strip()
+    if not cleaned:
+        return ""
+    if cleaned.startswith("@"):
+        cleaned = f"https://www.youtube.com/{cleaned}"
+    elif not cleaned.startswith("http"):
+        cleaned = f"https://www.youtube.com/{cleaned.lstrip('/')}"
+
+    req = Request(cleaned, headers={"User-Agent": YOUTUBE_RSS_USER_AGENT})
+    with urlopen(req, timeout=20) as response:
+        html = response.read().decode("utf-8", errors="replace")
+
+    found = _extract_uc_channel_id(html)
+    if found:
+        return found
+    raise ValueError(f"Unable to resolve canonical UC channel ID from source: {source}")
+
+
+def normalize_youtube_source_config(path):
+    text = path.read_text()
+    normalized_lines = []
+    changed = False
+
+    # Preferred simple format: "Name: https://www.youtube.com/channel/UC..."
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith(">"):
+            continue
+        match = re.match(r"^(.+?):\s*(https?://\S+)$", line)
+        if not match:
+            continue
+        name = match.group(1).strip()
+        source = match.group(2).strip()
+        try:
+            canonical_id = _resolve_uc_channel_id(source)
+        except Exception as e:
+            log.warning("YouTube source normalization failed for source=%s: %s", source, e)
+            continue
+        canonical_line = f"{name}: https://www.youtube.com/channel/{canonical_id}"
+        normalized_lines.append(canonical_line)
+        if canonical_line != line:
+            changed = True
+
+    if not normalized_lines:
+        # Backward compatibility: parse old list format and rewrite.
+        names = [m.group(1) for m in re.finditer(r"^-\s+\*\*(.+?)\*\*", text, re.M)]
+        sources = [m.group(1) for m in re.finditer(r"^\s+-\s+(?:Canonical\s+)?Channel ID:\s*(\S+)", text, re.M)]
+        for name, source in zip(names, sources):
+            try:
+                canonical_id = _resolve_uc_channel_id(source)
+            except Exception as e:
+                log.warning("YouTube source normalization failed for source=%s: %s", source, e)
+                continue
+            normalized_lines.append(f"{name}: https://www.youtube.com/channel/{canonical_id}")
+        changed = bool(normalized_lines)
+
+    if changed and normalized_lines:
+        path.write_text("\n\n".join(normalized_lines) + "\n")
+        log.info("Normalized YouTube source config to canonical UC channel URLs: %s", path)
 
 
 def _iter_channel_latest_videos(payload):
@@ -448,27 +636,50 @@ def _video_title(video):
 
 
 def fetch_youtube(name, channel_id):
-    resolved_channel_id = _resolve_channel_id(channel_id)
+    counters = {
+        "youtube_discovery_successes": 0,
+        "youtube_discovery_hard_denies": 0,
+        "youtube_discovery_retryable_failures": 0,
+        "youtube_transcript_successes": 0,
+        "youtube_transcript_failures": 0,
+    }
+    resolved_channel_id = _extract_uc_channel_id(channel_id)
+    if not resolved_channel_id:
+        log.warning("YouTube source %s has non-canonical channel id=%s", name, channel_id)
+        counters["youtube_discovery_retryable_failures"] += 1
+        return [], True, counters
     try:
-        latest = _transcriptapi_get("/youtube/channel/latest", {"channel": resolved_channel_id})
-    except Exception as e:
+        videos = _youtube_rss_latest_videos(resolved_channel_id)
+        counters["youtube_discovery_successes"] += 1
+    except TranscriptApiHardDeny:
+        counters["youtube_discovery_hard_denies"] += 1
+        log.warning("YouTube discovery hard-denied for %s (%s)", name, resolved_channel_id)
+        return [], True, counters
+    except HTTPError as e:
+        if int(e.code) in RETRYABLE_HTTP_STATUSES:
+            counters["youtube_discovery_retryable_failures"] += 1
         log.warning(
-            "YouTube discovery failed for %s (%s; resolved=%s): %s",
+            "YouTube RSS discovery failed for %s (%s) status=%s",
             name,
-            channel_id,
+            resolved_channel_id,
+            e.code,
+        )
+        return [], True, counters
+    except Exception as e:
+        counters["youtube_discovery_retryable_failures"] += 1
+        log.warning(
+            "YouTube discovery failed for %s (%s): %s",
+            name,
             resolved_channel_id,
             e,
         )
-        return [], True
+        return [], True, counters
 
-    videos = _iter_channel_latest_videos(latest)
     if not videos:
         log.info(
-            "YouTube discovery returned no videos for %s (%s). result_count=%s keys=%s",
+            "YouTube discovery returned no videos for %s (%s).",
             name,
             resolved_channel_id,
-            latest.get("result_count"),
-            sorted(latest.keys()),
         )
 
     items = []
@@ -490,11 +701,18 @@ def fetch_youtube(name, channel_id):
             transcript = _extract_transcript_text(transcript_data)
         except HTTPError as e:
             log.warning("Transcript %s failed for channel=%s title=%r status=%s", vid, name, title, e.code)
+            counters["youtube_transcript_failures"] += 1
+            continue
+        except TranscriptApiHardDeny:
+            counters["youtube_transcript_failures"] += 1
+            log.warning("Transcript %s hard-denied for channel=%s title=%r", vid, name, title)
             continue
         except Exception as e:
             log.warning("Transcript %s failed for channel=%s title=%r: %s", vid, name, title, e)
+            counters["youtube_transcript_failures"] += 1
             continue
         if transcript.strip():
+            counters["youtube_transcript_successes"] += 1
             items.append(
                 {
                     "title": title or str(transcript_data.get("title") or "").strip(),
@@ -503,7 +721,7 @@ def fetch_youtube(name, channel_id):
                     "key": f"yt:{resolved_channel_id}:{vid}",
                 }
             )
-    return items, False
+    return items, False, counters
 
 # ══════════════════════════════════════════════
 # Storage & embedding
@@ -1636,6 +1854,15 @@ def run_ingest(conn):
     duplicates = 0
     skipped = 0
     youtube_discovery_failures = 0
+    youtube_counters = {
+        "youtube_discovery_successes": 0,
+        "youtube_discovery_hard_denies": 0,
+        "youtube_discovery_retryable_failures": 0,
+        "youtube_transcript_successes": 0,
+        "youtube_transcript_failures": 0,
+    }
+
+    normalize_youtube_source_config(ROOT / "feeds" / "youtube.md")
 
     for item in fetch_newsblur():
         candidates_found += 1
@@ -1656,7 +1883,9 @@ def run_ingest(conn):
             log.info("Ingest decision=skipped source_type=rss dedupe_key=%s canonical_url=%s", dedupe_key, canonical_url)
 
     for name, cid in parse_youtube(ROOT / "feeds" / "youtube.md"):
-        yt_items, discovery_failed = fetch_youtube(name, cid)
+        yt_items, discovery_failed, counters = fetch_youtube(name, cid)
+        for key, value in counters.items():
+            youtube_counters[key] += value
         if discovery_failed:
             youtube_discovery_failures += 1
             continue
@@ -1680,13 +1909,18 @@ def run_ingest(conn):
     save_state(conn, "last_ingest_new_sources", str(new))
     save_state(conn, "last_ingest_completed_at", datetime.now(UTC).isoformat())
     log.info(
-        "Ingest summary: candidates_found=%d articles_extracted=%d duplicates=%d new_inserts=%d skipped=%d youtube_discovery_failures=%d",
+        "Ingest summary: candidates_found=%d articles_extracted=%d duplicates=%d new_inserts=%d skipped=%d youtube_discovery_failures=%d youtube_discovery_successes=%d youtube_discovery_hard_denies=%d youtube_discovery_retryable_failures=%d youtube_transcript_successes=%d youtube_transcript_failures=%d",
         candidates_found,
         articles_extracted,
         duplicates,
         new,
         skipped,
         youtube_discovery_failures,
+        youtube_counters["youtube_discovery_successes"],
+        youtube_counters["youtube_discovery_hard_denies"],
+        youtube_counters["youtube_discovery_retryable_failures"],
+        youtube_counters["youtube_transcript_successes"],
+        youtube_counters["youtube_transcript_failures"],
     )
     log.info("Ingested %d new sources", new)
     return new
