@@ -15,7 +15,6 @@ from typing import Optional
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen, build_opener, HTTPCookieProcessor
-import xml.etree.ElementTree as ET
 
 import openai, psycopg
 from db_conn import resolve_database_conninfo
@@ -183,38 +182,79 @@ def fetch_newsblur():
 # YouTube ingestion
 # ══════════════════════════════════════════════
 
-YT_NS = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
+def _transcriptapi_get(path, params):
+    url = f"https://transcriptapi.com/api/v2{path}?{urlencode(params)}"
+    data = _get(
+        url,
+        headers={"Authorization": f"Bearer {TRANSCRIPT_KEY}", "Accept": "application/json"},
+    )
+    return json.loads(data)
+
+
+def _extract_transcript_text(data):
+    for key in ("transcript", "text", "content"):
+        value = data.get(key)
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return " ".join(p.get("text", "") for p in value if isinstance(p, dict))
+    return ""
+
+
+def _iter_channel_latest_videos(payload):
+    videos = payload.get("videos")
+    if not isinstance(videos, list):
+        videos = payload.get("items")
+    if not isinstance(videos, list):
+        videos = payload.get("data")
+    if not isinstance(videos, list):
+        return []
+    return videos
+
+
+def _video_id(video):
+    if not isinstance(video, dict):
+        return ""
+    for key in ("videoId", "video_id", "id"):
+        value = str(video.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _video_title(video):
+    if not isinstance(video, dict):
+        return ""
+    for key in ("title", "name"):
+        value = str(video.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
 
 def fetch_youtube(name, channel_id):
     try:
-        xml_bytes = _get(f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}")
-        root = ET.fromstring(xml_bytes)
+        latest = _transcriptapi_get("/youtube/channel/latest", {"channel": channel_id})
+        videos = _iter_channel_latest_videos(latest)
     except Exception as e:
-        log.warning("YouTube %s failed: %s", name, e)
+        log.warning("YouTube discovery failed for %s (%s): %s", name, channel_id, e)
         return []
 
     items = []
-    for entry in root.findall("atom:entry", YT_NS)[:5]:
-        vid = (entry.findtext("yt:videoId", default="", namespaces=YT_NS) or "").strip()
+    for video in videos:
+        vid = _video_id(video)
         if not vid:
             continue
-        title = (entry.findtext("atom:title", default="", namespaces=YT_NS) or "").strip()
+        title = _video_title(video)
         try:
-            turl = f"https://transcriptapi.com/api/v2/youtube/transcript?{urlencode({'video_url': f'https://www.youtube.com/watch?v={vid}'})}"
-            data = json.loads(_get(turl, headers={"Authorization": f"Bearer {TRANSCRIPT_KEY}", "Accept": "application/json"}))
-            transcript = ""
-            for k in ("transcript", "text", "content"):
-                v = data.get(k)
-                if isinstance(v, str): transcript = v; break
-                if isinstance(v, list): transcript = " ".join(p.get("text", "") for p in v if isinstance(p, dict)); break
+            transcript_data = _transcriptapi_get(
+                "/youtube/transcript",
+                {"video_url": f"https://www.youtube.com/watch?v={vid}"},
+            )
+            transcript = _extract_transcript_text(transcript_data)
         except HTTPError as e:
             if e.code == 403:
-                log.warning(
-                    "Transcript 403 rejected channel=%s video_id=%s title=%r",
-                    name,
-                    vid,
-                    title,
-                )
+                log.warning("Transcript 403 rejected channel=%s video_id=%s title=%r", name, vid, title)
             else:
                 log.warning("Transcript %s failed for channel=%s title=%r: %s", vid, name, title, e)
             continue
@@ -222,8 +262,14 @@ def fetch_youtube(name, channel_id):
             log.warning("Transcript %s failed for channel=%s title=%r: %s", vid, name, title, e)
             continue
         if transcript.strip():
-            items.append({"title": title, "url": f"https://www.youtube.com/watch?v={vid}",
-                          "content": transcript.strip(), "key": f"yt:{channel_id}:{vid}"})
+            items.append(
+                {
+                    "title": title,
+                    "url": f"https://www.youtube.com/watch?v={vid}",
+                    "content": transcript.strip(),
+                    "key": f"yt:{channel_id}:{vid}",
+                }
+            )
     return items
 
 # ══════════════════════════════════════════════
