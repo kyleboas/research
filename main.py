@@ -8,7 +8,7 @@ Architecture mirrors Anthropic's production research system:
 
 import argparse, json, logging, os, random, re, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import UTC, datetime
 from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Optional
@@ -914,7 +914,7 @@ def run_ingest(conn):
                 chunk_and_embed(conn, sid, item["content"])
                 new += 1
     save_state(conn, "last_ingest_new_sources", str(new))
-    save_state(conn, "last_ingest_completed_at", datetime.utcnow().isoformat())
+    save_state(conn, "last_ingest_completed_at", datetime.now(UTC).isoformat())
     log.info("Ingested %d new sources", new)
     return new
 
