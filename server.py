@@ -61,8 +61,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     for row in cur.fetchall()
                 ]
 
-                cur.execute(
-                    """
+                cur.execute("SELECT to_regclass('trend_candidate_sources')")
+                has_trend_candidate_sources = cur.fetchone()[0] is not None
+
+                detect_query = """
                     SELECT
                         tc.id,
                         tc.trend,
@@ -84,13 +86,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                             '[]'::json
                         )
                     FROM trend_candidates tc
-                    LEFT JOIN trend_candidate_sources tcs ON tcs.trend_candidate_id = tc.id
-                    LEFT JOIN sources s ON s.id = tcs.source_id
+                    {source_join}
                     GROUP BY tc.id
                     ORDER BY COALESCE(tc.final_score, tc.score) DESC, tc.detected_at DESC, tc.id DESC
                     LIMIT 50
-                    """
+                """.format(
+                    source_join=(
+                        """
+                        LEFT JOIN trend_candidate_sources tcs ON tcs.trend_candidate_id = tc.id
+                        LEFT JOIN sources s ON s.id = tcs.source_id
+                        """
+                        if has_trend_candidate_sources
+                        else "LEFT JOIN sources s ON FALSE"
+                    )
                 )
+                cur.execute(detect_query)
                 detect_items = [
                     {
                         "id": row[0],
