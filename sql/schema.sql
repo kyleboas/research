@@ -47,8 +47,30 @@ CREATE TABLE IF NOT EXISTS trend_candidates (
     detected_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+ALTER TABLE trend_candidates
+    ADD COLUMN IF NOT EXISTS feedback_adjustment INT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS final_score INT;
+
+CREATE TABLE IF NOT EXISTS trend_candidate_sources (
+    trend_candidate_id BIGINT NOT NULL REFERENCES trend_candidates(id) ON DELETE CASCADE,
+    source_id BIGINT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (trend_candidate_id, source_id)
+);
+
+CREATE TABLE IF NOT EXISTS trend_feedback (
+    id BIGSERIAL PRIMARY KEY,
+    trend_candidate_id BIGINT REFERENCES trend_candidates(id) ON DELETE SET NULL,
+    trend_text TEXT NOT NULL,
+    feedback_value INT NOT NULL CHECK (feedback_value IN (-1, 1)),
+    note TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Indexes for hybrid search
 CREATE INDEX IF NOT EXISTS idx_trend_candidates_status_score ON trend_candidates (status, score DESC);
+CREATE INDEX IF NOT EXISTS idx_trend_candidates_final_score ON trend_candidates (COALESCE(final_score, score) DESC, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trend_feedback_created_at ON trend_feedback (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX IF NOT EXISTS idx_chunks_tsv ON chunks USING GIN (search_tsv);
 CREATE INDEX IF NOT EXISTS idx_sources_tsv ON sources USING GIN (search_tsv);
