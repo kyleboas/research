@@ -115,8 +115,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     """
                     SELECT event, detail, event_time
                     FROM (
-                        SELECT 'Ingested source' AS event,
-                               COALESCE(title, source_type) AS detail,
+                        SELECT COALESCE(NULLIF(title, ''), 'Ingested source') AS event,
+                               COALESCE(NULLIF(source_type, ''), url, '') AS detail,
                                created_at AS event_time
                         FROM sources
                         UNION ALL
