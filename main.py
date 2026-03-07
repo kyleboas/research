@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Optional
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen, build_opener, HTTPCookieProcessor
 import xml.etree.ElementTree as ET
@@ -206,8 +207,19 @@ def fetch_youtube(name, channel_id):
                 v = data.get(k)
                 if isinstance(v, str): transcript = v; break
                 if isinstance(v, list): transcript = " ".join(p.get("text", "") for p in v if isinstance(p, dict)); break
+        except HTTPError as e:
+            if e.code == 403:
+                log.warning(
+                    "Transcript 403 rejected channel=%s video_id=%s title=%r",
+                    name,
+                    vid,
+                    title,
+                )
+            else:
+                log.warning("Transcript %s failed for channel=%s title=%r: %s", vid, name, title, e)
+            continue
         except Exception as e:
-            log.warning("Transcript %s failed: %s", vid, e)
+            log.warning("Transcript %s failed for channel=%s title=%r: %s", vid, name, title, e)
             continue
         if transcript.strip():
             items.append({"title": title, "url": f"https://www.youtube.com/watch?v={vid}",
