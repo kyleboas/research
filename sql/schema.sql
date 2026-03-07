@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS trend_feedback (
     id BIGSERIAL PRIMARY KEY,
     trend_candidate_id BIGINT REFERENCES trend_candidates(id) ON DELETE SET NULL,
     trend_text TEXT NOT NULL,
-    feedback_value INT NOT NULL CHECK (feedback_value IN (-1, 1)),
+    feedback_value INT NOT NULL CHECK (feedback_value IN (-5, -1, 1, 5)),
     note TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );

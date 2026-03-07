@@ -28,7 +28,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 id BIGSERIAL PRIMARY KEY,
                 trend_candidate_id BIGINT NOT NULL REFERENCES trend_candidates(id) ON DELETE CASCADE,
                 trend_text TEXT NOT NULL,
-                feedback_value INT NOT NULL CHECK (feedback_value IN (-1, 1)),
+                feedback_value INT NOT NULL CHECK (feedback_value IN (-5, -1, 1, 5)),
                 note TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
@@ -252,7 +252,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._send_json({"ok": False, "error": "invalid_trend_candidate_id"}, status=400)
             return
 
-        delta = 1 if feedback_kind == "important" else -1
+        delta = 5 if feedback_kind == "important" else -5
 
         conninfo, reason = resolve_database_conninfo()
         if not conninfo:

@@ -6,7 +6,7 @@ Architecture mirrors Anthropic's production research system:
   → Synthesis → Sufficiency evaluation → optional re-plan → CitationAgent → Revision
 """
 
-import argparse, json, logging, os, random, re, time
+import argparse, json, logging, math, os, random, re, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from http.cookiejar import CookieJar
@@ -532,29 +532,129 @@ def load_state(conn, key):
 # ══════════════════════════════════════════════
 
 def _tokenize_feedback_text(text: str) -> list[str]:
-    return [t for t in re.findall(r"[a-z0-9']+", text.lower()) if len(t) > 2]
+    """Return unigrams (>2 chars) and bigrams from text for keyword matching."""
+    words = [t for t in re.findall(r"[a-z0-9']+", text.lower()) if len(t) > 2]
+    # Include bigrams for better phrase-level matching
+    bigrams = [f"{words[i]}_{words[i+1]}" for i in range(len(words) - 1)]
+    return words + bigrams
 
 
-def _load_feedback_keyword_weights(conn) -> dict[str, int]:
+def _load_feedback_keyword_weights(conn) -> dict[str, float]:
+    """Load time-decayed keyword weights from historical feedback.
+
+    Recent feedback is weighted more heavily via exponential time decay.
+    Bigrams are included alongside unigrams for phrase-level matching.
+    """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT trend_text, feedback_value FROM trend_feedback ORDER BY created_at DESC LIMIT 1000"
+            "SELECT trend_text, feedback_value, created_at FROM trend_feedback ORDER BY created_at DESC LIMIT 2000"
         )
         rows = cur.fetchall()
 
-    weights: dict[str, int] = {}
-    for trend_text, feedback in rows:
-        for token in set(_tokenize_feedback_text(trend_text or "")):
-            weights[token] = weights.get(token, 0) + int(feedback or 0)
+    if not rows:
+        return {}
+
+    now = datetime.now(UTC) if hasattr(datetime, "now") else datetime.utcnow().replace(tzinfo=UTC)
+    half_life_days = 14.0  # feedback half-life: 14 days
+    decay_k = 0.693 / half_life_days  # ln(2) / half_life
+
+    weights: dict[str, float] = {}
+    for trend_text, feedback, created_at in rows:
+        if not trend_text or not feedback:
+            continue
+        # Time decay: recent feedback counts more
+        if created_at and hasattr(created_at, "timestamp"):
+            age_days = max(0.0, (now - created_at).total_seconds() / 86400.0)
+        else:
+            age_days = 0.0
+        time_weight = math.exp(-decay_k * age_days)  # 1.0 for today, 0.5 at 14 days, 0.25 at 28 days
+
+        for token in set(_tokenize_feedback_text(trend_text)):
+            weights[token] = weights.get(token, 0.0) + float(feedback) * time_weight
+
     return weights
 
 
-def _feedback_adjustment_for_trend(trend: str, keyword_weights: dict[str, int]) -> int:
-    if not keyword_weights:
-        return 0
-    tokens = set(_tokenize_feedback_text(trend or ""))
-    adjustment = sum(keyword_weights.get(token, 0) for token in tokens)
-    return max(-20, min(20, adjustment))
+def _load_feedback_embeddings(conn) -> list[tuple[list[float], int]]:
+    """Load recent feedback trend texts and their embeddings for semantic matching.
+
+    Returns list of (embedding_vector, feedback_value) tuples.
+    Generates embeddings on the fly for feedback trends (batched).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT DISTINCT ON (trend_text) trend_text, feedback_value
+               FROM trend_feedback
+               ORDER BY trend_text, created_at DESC
+               LIMIT 200"""
+        )
+        rows = cur.fetchall()
+
+    if not rows:
+        return []
+
+    texts = [r[0] for r in rows if r[0]]
+    feedbacks = [int(r[1]) for r in rows if r[0]]
+    if not texts:
+        return []
+
+    # Batch embed all feedback trend texts
+    vectors = embed(texts)
+    if not vectors:
+        return []
+
+    return list(zip(vectors, feedbacks))
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _feedback_adjustment_for_trend(
+    trend: str,
+    keyword_weights: dict[str, float],
+    feedback_embeddings: list[tuple[list[float], int]] | None = None,
+) -> int:
+    """Compute feedback adjustment combining keyword matching + semantic similarity.
+
+    Keyword component: sum of time-decayed keyword weights for matching tokens/bigrams.
+    Semantic component: cosine similarity between new trend and past feedback trends,
+      weighted by feedback value. Only high-similarity matches (>0.6) contribute.
+
+    Combined adjustment is clamped to [-50, +50].
+    """
+    adjustment = 0.0
+
+    # --- Keyword component (bigrams weighted 2x) ---
+    if keyword_weights:
+        tokens = set(_tokenize_feedback_text(trend or ""))
+        for token in tokens:
+            w = keyword_weights.get(token, 0.0)
+            if "_" in token:  # bigram — weight more heavily
+                w *= 2.0
+            adjustment += w
+
+    # --- Semantic similarity component ---
+    if feedback_embeddings and trend:
+        trend_vectors = embed([trend])
+        if trend_vectors:
+            trend_vec = trend_vectors[0]
+            semantic_adj = 0.0
+            for fb_vec, fb_value in feedback_embeddings:
+                sim = _cosine_similarity(trend_vec, fb_vec)
+                if sim > 0.6:  # only count meaningful similarity
+                    # Scale: sim=0.6 → 0, sim=1.0 → full weight
+                    strength = (sim - 0.6) / 0.4
+                    semantic_adj += strength * fb_value
+            # Semantic component can contribute up to ±25
+            adjustment += max(-25.0, min(25.0, semantic_adj))
+
+    return max(-50, min(50, int(round(adjustment))))
 
 
 def detect_trends(conn) -> tuple[list[dict], bool]:
@@ -1175,10 +1275,13 @@ def run_detect(conn, min_new_sources=0):
         raise SystemExit(1)
     if candidates:
         keyword_weights = _load_feedback_keyword_weights(conn)
+        feedback_embeddings = _load_feedback_embeddings(conn)
+        if feedback_embeddings:
+            log.info("Loaded %d feedback embeddings for semantic matching", len(feedback_embeddings))
         with conn.cursor() as cur:
             stored_scores = []
             for c in candidates:
-                feedback_adjustment = _feedback_adjustment_for_trend(c["trend"], keyword_weights)
+                feedback_adjustment = _feedback_adjustment_for_trend(c["trend"], keyword_weights, feedback_embeddings)
                 final_score = max(0, min(100, int(c["score"]) + feedback_adjustment))
                 cur.execute(
                     "INSERT INTO trend_candidates (trend, reasoning, score, feedback_adjustment, final_score) VALUES (%s, %s, %s, %s, %s) RETURNING id",
