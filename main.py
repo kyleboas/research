@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen, build_opener, HTTPCookieProcessor
 
 import openai, psycopg
 from db_conn import resolve_database_conninfo
+from trend_detection import run_bertrend_detection, describe_signals_with_llm
 
 log = logging.getLogger("research")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -492,6 +493,52 @@ def _feedback_adjustment_for_trend(trend: str, keyword_weights: dict[str, int]) 
 
 
 def detect_trends(conn) -> tuple[list[dict], bool]:
+    """Detect novel trends using BERTrend weak signal detection + LLM synthesis.
+
+    Pipeline:
+      1. Run BERTrend clustering on chunk embeddings across time windows
+      2. Track topic evolution with merging and exponential decay
+      3. Classify signals as noise/weak/strong via rolling percentile thresholds
+      4. Feed algorithmic signals into LLM for human-readable trend descriptions
+      5. Fall back to LLM-only detection if BERTrend finds nothing
+
+    Returns (candidates, had_error) matching the existing pipeline interface.
+    """
+    cfg_path = ROOT / "config.json"
+
+    # Fetch past report titles to avoid repeats
+    with conn.cursor() as cur:
+        cur.execute("SELECT title FROM reports ORDER BY created_at DESC LIMIT 10")
+        past = [r[0] for r in cur.fetchall()]
+
+    # ── BERTrend algorithmic detection ────────────────────────────────────────
+    try:
+        signals = run_bertrend_detection(conn, cfg_path=cfg_path)
+        if signals:
+            log.info("BERTrend detected %d signals (%d weak, %d strong)",
+                     len(signals),
+                     sum(1 for s in signals if s["signal_class"] == "weak"),
+                     sum(1 for s in signals if s["signal_class"] == "strong"))
+
+            # Use LLM to synthesize signals into trend descriptions
+            candidates = describe_signals_with_llm(conn, signals, ask, past_topics=past)
+            if candidates:
+                log.info("BERTrend + LLM produced %d trend candidates", len(candidates))
+                return candidates, False
+
+            log.info("BERTrend signals found but LLM synthesis returned no candidates")
+        else:
+            log.info("BERTrend found no non-noise signals, falling back to LLM-only detection")
+
+    except Exception as e:
+        log.warning("BERTrend detection failed (%s), falling back to LLM-only detection", e)
+
+    # ── Fallback: LLM-only detection (original approach) ─────────────────────
+    return _detect_trends_llm_only(conn, past)
+
+
+def _detect_trends_llm_only(conn, past) -> tuple[list[dict], bool]:
+    """Original LLM-only trend detection as fallback."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id, title, url, LEFT(content, 500) FROM sources "
@@ -514,9 +561,6 @@ def detect_trends(conn) -> tuple[list[dict], bool]:
             }
         )
 
-    with conn.cursor() as cur:
-        cur.execute("SELECT title FROM reports ORDER BY created_at DESC LIMIT 10")
-        past = [r[0] for r in cur.fetchall()]
     past_block = "\n".join(f"- {t}" for t in past) if past else "(none)"
 
     try:
@@ -533,7 +577,7 @@ def detect_trends(conn) -> tuple[list[dict], bool]:
             '{"trend": "<10-20 word description>", "reasoning": "<why novel>", "score": <0-100>, "source_titles": ["<exact title>"]}'
             ', ...]}'
         )
-        log.info("Trend detection raw response: %r", text)
+        log.info("LLM-only trend detection raw response: %r", text)
         candidates = parse_json(text).get("candidates", [])
         valid = []
         for c in candidates:
@@ -557,7 +601,7 @@ def detect_trends(conn) -> tuple[list[dict], bool]:
 
         return valid, False
     except Exception as e:
-        log.warning("Trend detection failed: %s", e)
+        log.warning("LLM-only trend detection failed: %s", e)
         return [], True
 
 # ══════════════════════════════════════════════

@@ -75,6 +75,15 @@ CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks USING ivfflat (embeddi
 CREATE INDEX IF NOT EXISTS idx_chunks_tsv ON chunks USING GIN (search_tsv);
 CREATE INDEX IF NOT EXISTS idx_sources_tsv ON sources USING GIN (search_tsv);
 
+-- BERTrend topic tracker state (JSON snapshot of TopicTracker)
+CREATE TABLE IF NOT EXISTS topic_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    snapshot JSONB NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_topic_snapshots_created_at ON topic_snapshots (created_at DESC);
+
 -- Hybrid Reciprocal Rank Fusion search
 CREATE OR REPLACE FUNCTION hybrid_search(
     query_text TEXT,
