@@ -138,6 +138,41 @@
 
       .source-thread li { margin: 6px 0; }
 
+      .sources-list {
+        margin-top: 8px;
+        padding-left: 20px;
+      }
+
+      .sources-list li { margin: 6px 0; }
+
+      .feedback-row {
+        margin-top: 10px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .feedback-btn {
+        border: 1px solid var(--line);
+        background: #f5f6f8;
+        border-radius: 10px;
+        padding: 6px 10px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      .feedback-btn:hover,
+      .feedback-btn:focus-visible {
+        border-color: #ccd7ff;
+      }
+
+      .feedback-note {
+        margin: 8px 0 0;
+        color: var(--subtext);
+        font-size: 0.9rem;
+      }
+
       .status-grid {
         display: grid;
         gap: 12px;
@@ -190,6 +225,12 @@
         text.length > length ? `${text.slice(0, length)}…` : text;
 
       const safeText = (value, fallback = "") => (value == null || value === "" ? fallback : String(value));
+      const escapeHtml = (value) => String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('\"', '&quot;')
+        .replaceAll("'", '&#39;');
 
       const formatIsoTime = (value) => {
         if (!value) return "—";
@@ -239,6 +280,33 @@
         });
       };
 
+      const submitTrendFeedback = async (trendCandidateId, feedback, buttonEl) => {
+        const priorText = buttonEl.textContent;
+        buttonEl.disabled = true;
+        buttonEl.textContent = "Saving...";
+
+        try {
+          const response = await fetch("/api/trend-feedback", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ trend_candidate_id: trendCandidateId, feedback }),
+          });
+          const payload = await response.json();
+          if (!response.ok || !payload.ok) {
+            throw new Error(payload.error || "Could not save feedback");
+          }
+          await loadDashboard();
+        } catch (error) {
+          buttonEl.textContent = "Try again";
+          alert(`Feedback failed: ${error.message}`);
+        } finally {
+          buttonEl.disabled = false;
+          if (buttonEl.textContent !== "Try again") {
+            buttonEl.textContent = priorText;
+          }
+        }
+      };
+
       const renderDetect = (items) => {
         detectEl.innerHTML = "";
         if (!items.length) {
@@ -247,10 +315,24 @@
         }
 
         items.forEach((item, index) => {
+          const sources = Array.isArray(item.sources) ? item.sources : [];
+          const sourcesHtml = sources.length
+            ? `<li><strong>Supporting sources</strong><ul class="sources-list">${sources
+                .map((source) => `<li>${source.url ? `<a href="${escapeHtml(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(safeText(source.title, "Untitled source"))}</a>` : escapeHtml(safeText(source.title, "Untitled source"))}</li>`)
+                .join("")}</ul></li>`
+            : "<li><strong>Supporting sources</strong>: none linked by detection model yet.</li>";
+
           detectEl.insertAdjacentHTML(
             "beforeend",
-            `<article class="trend"><h3><span class="rank">#${index + 1}</span>${safeText(item.trend, "Untitled trend")}</h3><ul class="source-thread"><li>Score: ${safeText(item.score, "n/a")}</li><li>Status: ${safeText(item.status, "unknown")}</li><li>Detected: ${formatIsoTime(item.detected_at)}</li>${item.reasoning ? `<li>${truncate(item.reasoning)}</li>` : ""}</ul></article>`
+            `<article class="trend" data-trend-id="${item.id}"><h3><span class="rank">#${index + 1}</span>${escapeHtml(safeText(item.trend, "Untitled trend"))}</h3><ul class="source-thread"><li>Score: ${safeText(item.score, "n/a")} (base ${safeText(item.base_score, "n/a")}, feedback ${safeText(item.feedback_adjustment, 0)})</li><li>Status: ${escapeHtml(safeText(item.status, "unknown"))}</li><li>Detected: ${formatIsoTime(item.detected_at)}</li>${item.reasoning ? `<li>${escapeHtml(truncate(item.reasoning))}</li>` : ""}${sourcesHtml}</ul><div class="feedback-row"><button class="feedback-btn" data-feedback="important">Important 👍</button><button class="feedback-btn" data-feedback="not_important">Not important 👎</button></div><p class="feedback-note">Your feedback influences future detect scoring.</p></article>`
           );
+        });
+
+        detectEl.querySelectorAll(".feedback-btn").forEach((button) => {
+          button.addEventListener("click", () => {
+            const article = button.closest(".trend");
+            submitTrendFeedback(article?.dataset.trendId, button.dataset.feedback, button);
+          });
         });
       };
 

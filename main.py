@@ -465,17 +465,55 @@ def load_state(conn, key):
 # Trend detection
 # ══════════════════════════════════════════════
 
+def _tokenize_feedback_text(text: str) -> list[str]:
+    return [t for t in re.findall(r"[a-z0-9']+", text.lower()) if len(t) > 2]
+
+
+def _load_feedback_keyword_weights(conn) -> dict[str, int]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT trend_text, feedback_value FROM trend_feedback ORDER BY created_at DESC LIMIT 1000"
+        )
+        rows = cur.fetchall()
+
+    weights: dict[str, int] = {}
+    for trend_text, feedback in rows:
+        for token in set(_tokenize_feedback_text(trend_text or "")):
+            weights[token] = weights.get(token, 0) + int(feedback or 0)
+    return weights
+
+
+def _feedback_adjustment_for_trend(trend: str, keyword_weights: dict[str, int]) -> int:
+    if not keyword_weights:
+        return 0
+    tokens = set(_tokenize_feedback_text(trend or ""))
+    adjustment = sum(keyword_weights.get(token, 0) for token in tokens)
+    return max(-20, min(20, adjustment))
+
+
 def detect_trends(conn) -> tuple[list[dict], bool]:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT title, LEFT(content, 500) FROM sources "
+            "SELECT id, title, url, LEFT(content, 500) FROM sources "
             "WHERE created_at > NOW() - INTERVAL '7 days' ORDER BY created_at DESC LIMIT 100"
         )
         recent = cur.fetchall()
     if not recent:
         return [], False
 
-    summaries = "\n".join(f"- {t}: {c}..." for t, c in recent)
+    source_catalog: dict[str, list[dict]] = {}
+    summaries = []
+    for source_id, title, url, content in recent:
+        source_title = (title or "Untitled source").strip()
+        summaries.append(f"- {source_title}: {content}...")
+        source_catalog.setdefault(source_title, []).append(
+            {
+                "source_id": source_id,
+                "title": source_title,
+                "url": url or "",
+            }
+        )
+
     with conn.cursor() as cur:
         cur.execute("SELECT title FROM reports ORDER BY created_at DESC LIMIT 10")
         past = [r[0] for r in cur.fetchall()]
@@ -484,23 +522,39 @@ def detect_trends(conn) -> tuple[list[dict], bool]:
     try:
         text = ask(
             "You are a football tactics analyst spotting novel trends before they go mainstream.",
-            f"Recent articles and transcripts:\n{summaries}\n\n"
+            f"Recent articles and transcripts:\n{'\n'.join(summaries)}\n\n"
             f"Already-covered topics (avoid repeating):\n{past_block}\n\n"
             "Identify the top 5 most novel tactical or strategic trends being tried by football "
             "players or teams. Rank them by novelty — things not yet widely adopted get higher scores.\n\n"
             "Score each trend 0-100 where 100 = extremely novel and underreported, 0 = widely known.\n\n"
+            "For each trend include source_titles as a list of exact titles from the provided source list that most strongly support the trend.\n\n"
             "Return ONLY valid JSON. No markdown. No code fences. No prose. Use double quotes.\n"
             'Format: {"candidates": ['
-            '{"trend": "<10-20 word description>", "reasoning": "<why novel>", "score": <0-100>}'
+            '{"trend": "<10-20 word description>", "reasoning": "<why novel>", "score": <0-100>, "source_titles": ["<exact title>"]}'
             ', ...]}'
         )
         log.info("Trend detection raw response: %r", text)
         candidates = parse_json(text).get("candidates", [])
-        # Validate each entry has required fields
-        valid = [
-            c for c in candidates
-            if isinstance(c, dict) and c.get("trend") and isinstance(c.get("score"), int)
-        ]
+        valid = []
+        for c in candidates:
+            if not (isinstance(c, dict) and c.get("trend") and isinstance(c.get("score"), int)):
+                continue
+
+            matched_sources = []
+            for title in c.get("source_titles") or []:
+                matched_sources.extend(source_catalog.get(str(title).strip(), []))
+
+            deduped = []
+            seen_source_ids = set()
+            for source in matched_sources:
+                if source["source_id"] in seen_source_ids:
+                    continue
+                seen_source_ids.add(source["source_id"])
+                deduped.append(source)
+
+            c["sources"] = deduped
+            valid.append(c)
+
         return valid, False
     except Exception as e:
         log.warning("Trend detection failed: %s", e)
@@ -997,14 +1051,25 @@ def run_detect(conn, min_new_sources=0):
         log.error("Trend detection run failed due to response-format/parsing error")
         raise SystemExit(1)
     if candidates:
+        keyword_weights = _load_feedback_keyword_weights(conn)
         with conn.cursor() as cur:
+            stored_scores = []
             for c in candidates:
+                feedback_adjustment = _feedback_adjustment_for_trend(c["trend"], keyword_weights)
+                final_score = max(0, min(100, int(c["score"]) + feedback_adjustment))
                 cur.execute(
-                    "INSERT INTO trend_candidates (trend, reasoning, score) VALUES (%s, %s, %s)",
-                    (c["trend"], c.get("reasoning"), c["score"]),
+                    "INSERT INTO trend_candidates (trend, reasoning, score, feedback_adjustment, final_score) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                    (c["trend"], c.get("reasoning"), c["score"], feedback_adjustment, final_score),
                 )
+                trend_candidate_id = cur.fetchone()[0]
+                for source in c.get("sources") or []:
+                    cur.execute(
+                        "INSERT INTO trend_candidate_sources (trend_candidate_id, source_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                        (trend_candidate_id, source["source_id"]),
+                    )
+                stored_scores.append(final_score)
         conn.commit()
-        log.info("Stored %d trend candidates (top score: %d)", len(candidates), candidates[0]["score"])
+        log.info("Stored %d trend candidates (top final score: %d)", len(candidates), max(stored_scores))
     else:
         log.info("No novel trends detected this run")
 
@@ -1012,7 +1077,7 @@ def run_detect(conn, min_new_sources=0):
 def run_report(conn):
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT id, trend FROM trend_candidates WHERE status = 'pending' ORDER BY score DESC LIMIT 1"
+            "SELECT id, trend FROM trend_candidates WHERE status = 'pending' ORDER BY COALESCE(final_score, score) DESC, detected_at DESC LIMIT 1"
         )
         row = cur.fetchone()
     if not row:

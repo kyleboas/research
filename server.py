@@ -20,6 +20,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_json_body(self):
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        raw = self.rfile.read(length) if length > 0 else b"{}"
+        return json.loads(raw.decode("utf-8") or "{}")
+
     def _fetch_dashboard_payload(self):
         conninfo, reason = resolve_database_conninfo()
         if not conninfo:
@@ -58,19 +63,45 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
                 cur.execute(
                     """
-                    SELECT trend, reasoning, score, status, detected_at
-                    FROM trend_candidates
-                    ORDER BY score DESC, detected_at DESC, id DESC
+                    SELECT
+                        tc.id,
+                        tc.trend,
+                        tc.reasoning,
+                        tc.score,
+                        tc.feedback_adjustment,
+                        COALESCE(tc.final_score, tc.score) AS display_score,
+                        tc.status,
+                        tc.detected_at,
+                        COALESCE(
+                            json_agg(
+                                json_build_object(
+                                    'id', s.id,
+                                    'title', COALESCE(s.title, 'Untitled source'),
+                                    'url', COALESCE(s.url, '')
+                                )
+                                ORDER BY s.created_at DESC, s.id DESC
+                            ) FILTER (WHERE s.id IS NOT NULL),
+                            '[]'::json
+                        )
+                    FROM trend_candidates tc
+                    LEFT JOIN trend_candidate_sources tcs ON tcs.trend_candidate_id = tc.id
+                    LEFT JOIN sources s ON s.id = tcs.source_id
+                    GROUP BY tc.id
+                    ORDER BY COALESCE(tc.final_score, tc.score) DESC, tc.detected_at DESC, tc.id DESC
                     LIMIT 50
                     """
                 )
                 detect_items = [
                     {
-                        "trend": row[0],
-                        "reasoning": row[1] or "",
-                        "score": row[2],
-                        "status": row[3],
-                        "detected_at": row[4].isoformat() if row[4] else None,
+                        "id": row[0],
+                        "trend": row[1],
+                        "reasoning": row[2] or "",
+                        "score": row[5],
+                        "base_score": row[3],
+                        "feedback_adjustment": row[4] or 0,
+                        "status": row[6],
+                        "detected_at": row[7].isoformat() if row[7] else None,
+                        "sources": row[8] if isinstance(row[8], list) else [],
                     }
                     for row in cur.fetchall()
                 ]
@@ -163,6 +194,76 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "status": status_items,
             "warning": None,
         }
+
+    def _record_trend_feedback(self):
+        payload = self._read_json_body()
+        trend_candidate_id = payload.get("trend_candidate_id")
+        feedback_kind = str(payload.get("feedback") or "").strip().lower()
+        note = str(payload.get("note") or "").strip()
+
+        if feedback_kind not in {"important", "not_important"}:
+            self._send_json({"ok": False, "error": "invalid_feedback"}, status=400)
+            return
+
+        try:
+            trend_candidate_id = int(trend_candidate_id)
+        except (TypeError, ValueError):
+            self._send_json({"ok": False, "error": "invalid_trend_candidate_id"}, status=400)
+            return
+
+        delta = 1 if feedback_kind == "important" else -1
+
+        conninfo, reason = resolve_database_conninfo()
+        if not conninfo:
+            self._send_json({"ok": False, "error": f"database_unavailable:{reason}"}, status=503)
+            return
+
+        with psycopg.connect(conninfo) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT trend FROM trend_candidates WHERE id = %s", (trend_candidate_id,))
+                row = cur.fetchone()
+                if not row:
+                    self._send_json({"ok": False, "error": "trend_not_found"}, status=404)
+                    return
+
+                trend_text = row[0] or ""
+                cur.execute(
+                    "INSERT INTO trend_feedback (trend_candidate_id, trend_text, feedback_value, note) VALUES (%s, %s, %s, %s)",
+                    (trend_candidate_id, trend_text, delta, note or None),
+                )
+                cur.execute(
+                    """
+                    UPDATE trend_candidates
+                    SET feedback_adjustment = feedback_adjustment + %s,
+                        final_score = GREATEST(0, LEAST(100, score + feedback_adjustment + %s))
+                    WHERE id = %s
+                    RETURNING score, feedback_adjustment, COALESCE(final_score, score)
+                    """,
+                    (delta, delta, trend_candidate_id),
+                )
+                updated = cur.fetchone()
+            conn.commit()
+
+        self._send_json(
+            {
+                "ok": True,
+                "trend_candidate_id": trend_candidate_id,
+                "base_score": updated[0],
+                "feedback_adjustment": updated[1],
+                "score": updated[2],
+            }
+        )
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/trend-feedback":
+            try:
+                self._record_trend_feedback()
+            except Exception as exc:
+                self._send_json({"ok": False, "error": f"failed_to_record_feedback:{exc}"}, status=500)
+            return
+
+        self._send_json({"ok": False, "error": "not_found"}, status=404)
 
     def do_GET(self):
         parsed = urlparse(self.path)
