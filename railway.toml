@@ -7,15 +7,15 @@ builder = "nixpacks"
 #
 #   Service: ingest
 #     PIPELINE_STEP=ingest
-#     Cron schedule: 0 */2 * * *   (every 2 hours)
+#     Cron schedule: 0 * * * *     (every hour, top of hour)
 #
 #   Service: detect
 #     PIPELINE_STEP=detect
-#     Cron schedule: 0 */4 * * *   (every 4 hours)
+#     Cron schedule: 0 */6 * * *   (every 6 hours)
 #
 #   Service: report
 #     PIPELINE_STEP=report
-#     Cron schedule: 0 6 * * *     (daily at 6am)
+#     Cron schedule: 0 1 * * *     (daily at 8pm EST / 01:00 UTC)
 #
 # Set these variables in Railway's Variables tab for all three services:
 #

@@ -6,7 +6,7 @@ Architecture mirrors [Anthropic's multi-agent research system](https://www.anthr
 
 ## How it works
 
-1. **Ingest** — Fetches RSS feeds and YouTube transcripts every 2 hours, stores full content in Supabase Postgres with vector embeddings.
+1. **Ingest** — Fetches RSS feeds and YouTube transcripts every hour (top of hour), stores full content in Supabase Postgres with vector embeddings.
 2. **Detect** — Uses OpenAI models (via ChatGPT OAuth) to identify novel tactics being tried by players/teams before they become mainstream.
 3. **Report** — Multi-agent deep research pipeline:
 
@@ -75,7 +75,7 @@ LLM calls are routed through Cloudflare AI Gateway, and the runtime normalizes g
 ```bash
 0 * * * * cd /path/to/research && /path/to/python main.py --step ingest >> logs/ingest.log 2>&1
 0 */6 * * * cd /path/to/research && /path/to/python main.py --step detect --min-new-sources-for-detect 5 >> logs/detect.log 2>&1
-0 6 * * * cd /path/to/research && /path/to/python main.py --step report >> logs/report.log 2>&1
+0 1 * * * cd /path/to/research && /path/to/python main.py --step report >> logs/report.log 2>&1
 ```
 
 `python main.py` defaults to `--step ingest`.
