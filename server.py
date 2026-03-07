@@ -12,6 +12,18 @@ PORT = int(os.environ.get("PORT", 8080))
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
+    def _ensure_sources_metadata_columns(self, cur):
+        """Backfill newer ingestion columns for older `sources` tables."""
+        cur.execute(
+            """
+            ALTER TABLE sources
+                ADD COLUMN IF NOT EXISTS author TEXT,
+                ADD COLUMN IF NOT EXISTS publish_date DATE,
+                ADD COLUMN IF NOT EXISTS sitename TEXT,
+                ADD COLUMN IF NOT EXISTS extraction_method TEXT DEFAULT 'rss'
+            """
+        )
+
     def _resolve_feedback_storage_value(self, cur, delta):
         """Use a feedback value compatible with existing DB constraints.
 
@@ -93,6 +105,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
         with psycopg.connect(conninfo) as conn:
             with conn.cursor() as cur:
+                self._ensure_sources_metadata_columns(cur)
                 self._ensure_trend_candidate_scoring_columns(cur)
 
                 # ── Ingest: include extraction metadata ──
