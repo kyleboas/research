@@ -21,6 +21,26 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             """
         )
 
+    def _ensure_trend_feedback_table(self, cur):
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trend_feedback (
+                id BIGSERIAL PRIMARY KEY,
+                trend_candidate_id BIGINT NOT NULL REFERENCES trend_candidates(id) ON DELETE CASCADE,
+                trend_text TEXT NOT NULL,
+                feedback_value INT NOT NULL CHECK (feedback_value IN (-1, 1)),
+                note TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_trend_feedback_created_at
+            ON trend_feedback (created_at DESC)
+            """
+        )
+
     def _send_json(self, payload, status=200):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
@@ -242,6 +262,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         with psycopg.connect(conninfo) as conn:
             with conn.cursor() as cur:
                 self._ensure_trend_candidate_scoring_columns(cur)
+                self._ensure_trend_feedback_table(cur)
 
                 cur.execute("SELECT trend FROM trend_candidates WHERE id = %s", (trend_candidate_id,))
                 row = cur.fetchone()
