@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS sources (
     extraction_method TEXT DEFAULT 'rss',
     metadata JSONB DEFAULT '{}'::JSONB,
     search_tsv TSVECTOR GENERATED ALWAYS AS (
-        TO_TSVECTOR('english', COALESCE(title, '') || ' ' || COALESCE(LEFT(content, 2000), ''))
+        TO_TSVECTOR('simple', COALESCE(title, '') || ' ' || COALESCE(LEFT(content, 2000), ''))
     ) STORED,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     chunk_index INT NOT NULL,
     content TEXT NOT NULL,
     embedding VECTOR(1536),
-    search_tsv TSVECTOR GENERATED ALWAYS AS (TO_TSVECTOR('english', content)) STORED,
+    search_tsv TSVECTOR GENERATED ALWAYS AS (TO_TSVECTOR('simple', content)) STORED,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(source_id, chunk_index)
 );
@@ -148,9 +148,9 @@ RETURNS TABLE (chunk_id BIGINT, source_id BIGINT, content TEXT, score DOUBLE PRE
 LANGUAGE SQL STABLE AS $$
 WITH text_hits AS (
     SELECT c.id AS chunk_id, c.source_id, c.content,
-           ROW_NUMBER() OVER (ORDER BY ts_rank_cd(c.search_tsv, plainto_tsquery('english', query_text)) DESC, c.id) AS rank
+           ROW_NUMBER() OVER (ORDER BY ts_rank_cd(c.search_tsv, plainto_tsquery('simple', query_text)) DESC, c.id) AS rank
     FROM chunks c
-    WHERE c.search_tsv @@ plainto_tsquery('english', query_text)
+    WHERE c.search_tsv @@ plainto_tsquery('simple', query_text)
     LIMIT match_count * 3
 ),
 vector_hits AS (
