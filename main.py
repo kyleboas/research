@@ -35,7 +35,6 @@ NEWSBLUR_PASSWORD = os.environ["NEWSBLUR_PASSWORD"]
 # ── Cloudflare AI Gateway ──────────────────────────────────────────────────────
 CLOUDFLARE_GATEWAY_URL = os.environ["CLOUDFLARE_GATEWAY_URL"]
 CLOUDFLARE_GATEWAY_TOKEN = os.environ["CLOUDFLARE_GATEWAY_TOKEN"]
-CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
 
 # ── Config file (config.json) overrides env-var model defaults ────────────────
 _cfg_path = ROOT / "config.json"
@@ -87,8 +86,8 @@ def _normalize_cloudflare_base_urls(raw_url: str):
 def _make_client(base_url: str):
     """Build an OpenAI-compatible client routed through Cloudflare AI Gateway."""
     default_headers = {}
-    if CLOUDFLARE_API_TOKEN:
-        default_headers["cf-aig-authorization"] = f"Bearer {CLOUDFLARE_API_TOKEN}"
+    if CLOUDFLARE_GATEWAY_TOKEN:
+        default_headers["cf-aig-authorization"] = f"Bearer {CLOUDFLARE_GATEWAY_TOKEN}"
 
     return openai.OpenAI(
         api_key=CLOUDFLARE_GATEWAY_TOKEN,
@@ -826,7 +825,7 @@ def embed(texts):
         except openai.AuthenticationError as e:
             log.error(
                 "Embeddings authentication failed at AI Gateway. "
-                "Check CLOUDFLARE_API_TOKEN/cf-aig-authorization and gateway credential mode: %s",
+                "Check CLOUDFLARE_GATEWAY_TOKEN/cf-aig-authorization and gateway credential mode: %s",
                 e,
             )
             return None
