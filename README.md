@@ -63,6 +63,8 @@ LLM calls are routed through Cloudflare AI Gateway, and the runtime normalizes g
 
 For embeddings, the pipeline always sends OpenAI-compatible payloads (`model` + `input`) and auto-normalizes model names for `/compat` routes (for example `@cf/baai/bge-m3` becomes `workers-ai/@cf/baai/bge-m3`).
 
+If your gateway has **Authenticated Gateway** enabled, set `CLOUDFLARE_API_TOKEN` (Railway env var) so requests include `cf-aig-authorization: Bearer <token>` in addition to the provider credential.
+
 ## Setup
 
 1. Run `sql/schema.sql` in your Supabase SQL editor (enable pgvector first).
