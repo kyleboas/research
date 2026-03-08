@@ -35,6 +35,7 @@ NEWSBLUR_PASSWORD = os.environ["NEWSBLUR_PASSWORD"]
 # ── Cloudflare AI Gateway ──────────────────────────────────────────────────────
 CLOUDFLARE_GATEWAY_URL = os.environ["CLOUDFLARE_GATEWAY_URL"]
 CLOUDFLARE_GATEWAY_TOKEN = os.environ["CLOUDFLARE_GATEWAY_TOKEN"]
+CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
 
 # ── Config file (config.json) overrides env-var model defaults ────────────────
 _cfg_path = ROOT / "config.json"
@@ -85,9 +86,14 @@ def _normalize_cloudflare_base_urls(raw_url: str):
 
 def _make_client(base_url: str):
     """Build an OpenAI-compatible client routed through Cloudflare AI Gateway."""
+    default_headers = {}
+    if CLOUDFLARE_API_TOKEN:
+        default_headers["cf-aig-authorization"] = f"Bearer {CLOUDFLARE_API_TOKEN}"
+
     return openai.OpenAI(
         api_key=CLOUDFLARE_GATEWAY_TOKEN,
         base_url=base_url,
+        default_headers=default_headers,
     )
 
 
@@ -749,6 +755,27 @@ def store_source(conn, item, source_type):
         conn.commit()
         return row[0] if row else None
 
+
+def set_source_embed_status(conn, source_id, status, error_message=None):
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE sources "
+            "SET metadata = jsonb_set("
+            "  jsonb_set(COALESCE(metadata, '{}'::jsonb), '{embed_status}', to_jsonb(%s::text), true), "
+            "  '{embed_updated_at}', to_jsonb(NOW()::text), true"
+            ") "
+            "WHERE id = %s",
+            (status, source_id),
+        )
+        if error_message:
+            cur.execute(
+                "UPDATE sources "
+                "SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{embed_error}', to_jsonb(%s::text), true) "
+                "WHERE id = %s",
+                (error_message[:500], source_id),
+            )
+        conn.commit()
+
 def _sanitize_embedding_inputs(texts):
     """Normalize embedding inputs to OpenAI schema-safe strings.
 
@@ -796,6 +823,13 @@ def embed(texts):
         except openai.BadRequestError as e:
             log.error("Embeddings request rejected (bad request — check model/config): %s", e)
             return None
+        except openai.AuthenticationError as e:
+            log.error(
+                "Embeddings authentication failed at AI Gateway. "
+                "Check CLOUDFLARE_API_TOKEN/cf-aig-authorization and gateway credential mode: %s",
+                e,
+            )
+            return None
         except (openai.InternalServerError, openai.APIConnectionError, openai.APITimeoutError, openai.RateLimitError) as e:
             if attempt == max_attempts:
                 log.error("Embeddings request failed after %s attempts: %s", max_attempts, e)
@@ -822,55 +856,65 @@ def chunk_and_embed(conn, source_id, text):
     """
     chunk_records = chunk_with_context(text)
     if not chunk_records:
+        set_source_embed_status(conn, source_id, "embed_skipped", "No chunks produced from source content")
         return
 
     chunk_texts = [c["content"] for c in chunk_records]
     vectors = embed(chunk_texts)
     if not vectors:
         log.warning("Skipping chunk insert for source_id=%s because embeddings were unavailable", source_id)
+        set_source_embed_status(conn, source_id, "embed_failed", "Embeddings unavailable (request failed or rejected)")
         return
 
     all_patterns = []
-    with conn.cursor() as cur:
-        for chunk_rec, vec in zip(chunk_records, vectors):
-            if vec is None:
-                log.warning(
-                    "Skipping empty chunk for source_id=%s chunk_index=%s before embedding",
-                    source_id,
-                    chunk_rec["chunk_index"],
+    try:
+        with conn.cursor() as cur:
+            for chunk_rec, vec in zip(chunk_records, vectors):
+                if vec is None:
+                    log.warning(
+                        "Skipping empty chunk for source_id=%s chunk_index=%s before embedding",
+                        source_id,
+                        chunk_rec["chunk_index"],
+                    )
+                    continue
+                idx = chunk_rec["chunk_index"]
+                content = chunk_rec["content"]
+                ctx = chunk_rec.get("tactical_context", {})
+
+                # Store chunk metadata as JSONB in the metadata column if available
+                cur.execute(
+                    "INSERT INTO chunks (source_id, chunk_index, content, embedding) "
+                    "VALUES (%s, %s, %s, %s::vector) ON CONFLICT (source_id, chunk_index) DO NOTHING "
+                    "RETURNING id",
+                    (source_id, idx, content, vec_literal(vec)),
                 )
-                continue
-            idx = chunk_rec["chunk_index"]
-            content = chunk_rec["content"]
-            ctx = chunk_rec.get("tactical_context", {})
+                row = cur.fetchone()
+                chunk_id = row[0] if row else None
 
-            # Store chunk metadata as JSONB in the metadata column if available
-            cur.execute(
-                "INSERT INTO chunks (source_id, chunk_index, content, embedding) "
-                "VALUES (%s, %s, %s, %s::vector) ON CONFLICT (source_id, chunk_index) DO NOTHING "
-                "RETURNING id",
-                (source_id, idx, content, vec_literal(vec)),
-            )
-            row = cur.fetchone()
-            chunk_id = row[0] if row else None
+                # Extract tactical patterns from chunks with sufficient tactical density
+                if chunk_id and ctx.get("tactical_density", 0) > 0.1:
+                    patterns = extract_tactical_patterns(content, source_id=source_id, chunk_id=chunk_id)
+                    all_patterns.extend(patterns)
 
-            # Extract tactical patterns from chunks with sufficient tactical density
-            if chunk_id and ctx.get("tactical_density", 0) > 0.1:
-                patterns = extract_tactical_patterns(content, source_id=source_id, chunk_id=chunk_id)
-                all_patterns.extend(patterns)
+            # Store tactical patterns
+            for p in all_patterns:
+                cur.execute(
+                    "INSERT INTO tactical_patterns "
+                    "(source_id, chunk_id, pattern_type, actor, action, context, zones, phase) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    (p["source_id"], p["chunk_id"], p["pattern_type"],
+                     p.get("actor"), p["action"], p.get("context", "")[:300],
+                     p.get("zones") or [], p.get("phase")),
+                )
 
-        # Store tactical patterns
-        for p in all_patterns:
-            cur.execute(
-                "INSERT INTO tactical_patterns "
-                "(source_id, chunk_id, pattern_type, actor, action, context, zones, phase) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                (p["source_id"], p["chunk_id"], p["pattern_type"],
-                 p.get("actor"), p["action"], p.get("context", "")[:300],
-                 p.get("zones") or [], p.get("phase")),
-            )
+            conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        log.exception("Chunk embed/store failed for source_id=%s: %s", source_id, exc)
+        set_source_embed_status(conn, source_id, "embed_failed", str(exc))
+        return
 
-        conn.commit()
+    set_source_embed_status(conn, source_id, "embedded")
 
     if all_patterns:
         log.info("Extracted %d tactical patterns from source_id=%s", len(all_patterns), source_id)
