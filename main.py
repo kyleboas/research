@@ -167,7 +167,8 @@ SYS_SUBAGENT = (
 
 SYS_SYNTHESIS = (
     f"You are a synthesis editor merging multiple subagent research outputs into "
-    f"one coherent, publication-quality research report. {CITATION_FMT}"
+    f"one coherent, publication-quality research report. {CITATION_FMT}\n\n"
+    "Always write the report in English, regardless of the language of the source material."
 )
 
 SYS_CITATION = (
@@ -183,7 +184,8 @@ SYS_CITATION = (
 SYS_REVISION = (
     f"You are a revision editor producing the final research report. {CITATION_FMT}\n\n"
     "You have received a citation verification report from the CitationAgent. "
-    "Apply every directive precisely. The final report must have zero citation errors."
+    "Apply every directive precisely. The final report must have zero citation errors.\n\n"
+    "Always write the report in English, regardless of the language of the source material."
 )
 
 SYS_DECOMPOSE = (

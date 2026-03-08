@@ -49,7 +49,7 @@ def _fetch_html(url, timeout=20):
     req = Request(url, headers={
         "User-Agent": "Mozilla/5.0 (compatible; ResearchBot/2.0; +football-tactics-research)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Language": "*",
     })
     with urlopen(req, timeout=timeout) as r:
         return r.read()
