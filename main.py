@@ -151,9 +151,14 @@ def _fallback_model_without_provider(model_name: str) -> str | None:
 def _chat_completion_create(*, model: str, max_tokens: int, messages: list[dict], reasoning_effort: str | None = None):
     """Create chat completion with compat-route fallback for provider-prefix issues."""
     client = get_chat_client()
+    # max_completion_tokens is only valid for OpenAI reasoning models (o-series).
+    # All other providers (Gemini, Claude, Workers AI, etc.) use the standard
+    # max_tokens parameter; sending max_completion_tokens causes a 400 "Chat
+    # completion bad format" error (Cloudflare error code 2019).
+    tokens_key = "max_completion_tokens" if reasoning_effort else "max_tokens"
     kwargs = {
         "model": model,
-        "max_completion_tokens": max_tokens,
+        tokens_key: max_tokens,
         "messages": messages,
     }
     if reasoning_effort:
