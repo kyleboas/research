@@ -139,6 +139,12 @@ def _is_invalid_provider_error(exc: Exception) -> bool:
     return "invalid provider" in msg or "'code': 2008" in msg or '"code": 2008' in msg
 
 
+def _is_bad_format_error(exc: Exception) -> bool:
+    """Detect Cloudflare compat payload-format errors (code 2019)."""
+    msg = str(exc).lower()
+    return "bad format" in msg or "'code': 2019" in msg or '"code": 2019' in msg
+
+
 def _fallback_model_without_provider(model_name: str) -> str | None:
     """Return a provider-less model fallback when model is provider-prefixed."""
     model = (model_name or "").strip()
@@ -164,8 +170,35 @@ def _chat_completion_create(*, model: str, max_tokens: int, messages: list[dict]
     if reasoning_effort:
         kwargs["reasoning_effort"] = reasoning_effort
 
+    def _call_with_bad_format_retries(request_kwargs: dict):
+        """Retry with alternate token key/payload shape for strict compat providers."""
+        try:
+            return client.chat.completions.create(**request_kwargs)
+        except Exception as bad_format_exc:
+            if not _is_bad_format_error(bad_format_exc):
+                raise
+
+        # Some compat providers reject one token field but accept the other.
+        # Try the alternate key next.
+        alt = dict(request_kwargs)
+        if "max_tokens" in alt:
+            alt["max_completion_tokens"] = alt.pop("max_tokens")
+        elif "max_completion_tokens" in alt:
+            alt["max_tokens"] = alt.pop("max_completion_tokens")
+        try:
+            return client.chat.completions.create(**alt)
+        except Exception as bad_format_exc:
+            if not _is_bad_format_error(bad_format_exc):
+                raise
+
+        # Final fallback: drop token limit entirely (gateway/provider defaults).
+        minimal = dict(alt)
+        minimal.pop("max_tokens", None)
+        minimal.pop("max_completion_tokens", None)
+        return client.chat.completions.create(**minimal)
+
     try:
-        return client.chat.completions.create(**kwargs)
+        return _call_with_bad_format_retries(kwargs)
     except Exception as exc:
         fallback_model = _fallback_model_without_provider(model)
         if "/compat" not in (_chat_base_url or "") or not fallback_model or not _is_invalid_provider_error(exc):
@@ -176,7 +209,7 @@ def _chat_completion_create(*, model: str, max_tokens: int, messages: list[dict]
             fallback_model,
         )
         kwargs["model"] = fallback_model
-        return client.chat.completions.create(**kwargs)
+        return _call_with_bad_format_retries(kwargs)
 
 
 _chat_client = None
