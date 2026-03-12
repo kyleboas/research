@@ -27,7 +27,7 @@ builder = "nixpacks"
 #   DATABASE_URL              ${{pgvector.DATABASE_URL}}   ← Railway reference variable
 #   TRANSCRIPT_API_KEY        your-transcript-api-key
 #   CLOUDFLARE_GATEWAY_URL    https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_name}/openai
-#   CLOUDFLARE_GATEWAY_TOKEN  your-openai-api-key
+#   CLOUDFLARE_GATEWAY_TOKEN  your-cloudflare-ai-gateway-token
 #
 # Optional per-service extra CLI flags:
 #   PIPELINE_FLAGS            --min-new-sources-for-detect=5   (detect service example)

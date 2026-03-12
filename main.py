@@ -1117,8 +1117,17 @@ def parse_json(text):
         except json.JSONDecodeError:
             pass
 
-    log.error("parse_json failed — raw payload: %r", text[:500])
-    raise ValueError(f"No valid JSON found in response: {text[:200]}")
+    lowered = stripped.lower()
+    auth_indicators = ("401", "unauthorized", "authentication", "invalid_api_key", "cf-aig-authorization")
+    if any(indicator in lowered for indicator in auth_indicators):
+        log.error(
+            "LLM response was not JSON because the upstream request appears to have failed authentication "
+            "(check CLOUDFLARE_GATEWAY_TOKEN / cf-aig-authorization): %r",
+            stripped[:500],
+        )
+    else:
+        log.error("parse_json failed — raw payload: %r", stripped[:500])
+    raise ValueError(f"No valid JSON found in response: {stripped[:200]}")
 
 # ══════════════════════════════════════════════
 # Pipeline state (persists trend between steps)
