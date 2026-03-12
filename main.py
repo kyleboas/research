@@ -133,6 +133,47 @@ def _resolve_embed_model(base_url: str, model_name: str) -> str:
     return model
 
 
+def _is_invalid_provider_error(exc: Exception) -> bool:
+    """Detect Cloudflare compat errors caused by unsupported provider prefixes."""
+    msg = str(exc).lower()
+    return "invalid provider" in msg or "'code': 2008" in msg or '"code": 2008' in msg
+
+
+def _fallback_model_without_provider(model_name: str) -> str | None:
+    """Return a provider-less model fallback when model is provider-prefixed."""
+    model = (model_name or "").strip()
+    if "/" not in model:
+        return None
+    _, fallback = model.split("/", 1)
+    return fallback.strip() or None
+
+
+def _chat_completion_create(*, model: str, max_tokens: int, messages: list[dict], reasoning_effort: str | None = None):
+    """Create chat completion with compat-route fallback for provider-prefix issues."""
+    client = get_chat_client()
+    kwargs = {
+        "model": model,
+        "max_completion_tokens": max_tokens,
+        "messages": messages,
+    }
+    if reasoning_effort:
+        kwargs["reasoning_effort"] = reasoning_effort
+
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        fallback_model = _fallback_model_without_provider(model)
+        if "/compat" not in (_chat_base_url or "") or not fallback_model or not _is_invalid_provider_error(exc):
+            raise
+        log.warning(
+            "Retrying chat completion after invalid provider for model '%s' on compat route; fallback='%s'",
+            model,
+            fallback_model,
+        )
+        kwargs["model"] = fallback_model
+        return client.chat.completions.create(**kwargs)
+
+
 _chat_client = None
 _embed_client = None
 _chat_base_url, _embed_base_url = _normalize_cloudflare_base_urls(CLOUDFLARE_GATEWAY_URL)
@@ -975,10 +1016,9 @@ def chunks_to_context(rows):
 
 def ask(system, user, model=None, max_tokens=4096):
     """Standard LLM call — system + user → text."""
-    client = get_chat_client()
-    resp = client.chat.completions.create(
+    resp = _chat_completion_create(
         model=model or MODEL,
-        max_completion_tokens=max_tokens,
+        max_tokens=max_tokens,
         messages=[
             {"role": "system", "content": system},
             {"role": "user",   "content": user},
@@ -993,10 +1033,9 @@ def ask_thinking(system, user, budget_tokens=10000, max_tokens=16000):
     Returns (thinking_text, response_text). thinking_text is empty as reasoning
     is internal to the model.
     """
-    client = get_chat_client()
-    resp = client.chat.completions.create(
+    resp = _chat_completion_create(
         model=LEAD_MODEL,
-        max_completion_tokens=max_tokens,
+        max_tokens=max_tokens,
         reasoning_effort="high",
         messages=[
             {"role": "system", "content": system},
