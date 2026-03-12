@@ -77,6 +77,30 @@ def _fetch_chunks_by_window(conn, lookback_days, window_days):
         rows = cur.fetchall()
 
     if not rows:
+        # Diagnostic queries to help identify why no embeddings were found
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM sources WHERE created_at > NOW() - INTERVAL '%s days'",
+                (lookback_days,),
+            )
+            source_count = cur.fetchone()[0]
+            cur.execute(
+                "SELECT COUNT(*) FROM chunks c JOIN sources s ON c.source_id = s.id "
+                "WHERE s.created_at > NOW() - INTERVAL '%s days'",
+                (lookback_days,),
+            )
+            chunk_count = cur.fetchone()[0]
+            cur.execute(
+                "SELECT COUNT(*) FROM chunks c JOIN sources s ON c.source_id = s.id "
+                "WHERE s.created_at > NOW() - INTERVAL '%s days' AND c.embedding IS NOT NULL",
+                (lookback_days,),
+            )
+            embedded_count = cur.fetchone()[0]
+        log.info(
+            "BERTrend chunk fetch: 0 usable rows — sources=%d, chunks=%d, "
+            "chunks_with_embeddings=%d (lookback=%dd)",
+            source_count, chunk_count, embedded_count, lookback_days,
+        )
         return []
 
     # Parse embedding vectors from pgvector text format
@@ -400,6 +424,12 @@ def _classify_signals(tracker, rolling_window_days, noise_pct, weak_pct):
 
     p_noise = float(np.percentile(recent_popularities, noise_pct))
     p_weak = float(np.percentile(recent_popularities, weak_pct))
+    log.info(
+        "BERTrend classify: %d topics, %d recent popularity samples, "
+        "P%d=%.3f (noise), P%d=%.3f (weak/strong)",
+        len(tracker.topics), len(recent_popularities),
+        noise_pct, p_noise, weak_pct, p_weak,
+    )
 
     for topic in tracker.topics.values():
         pop = topic["popularity"]
@@ -482,6 +512,16 @@ def run_bertrend_detection(conn, config=None, cfg_path=None):
     _classify_signals(
         tracker, cfg["rolling_window_days"],
         cfg["noise_percentile"], cfg["weak_percentile"],
+    )
+
+    # Log classification breakdown
+    class_counts = defaultdict(int)
+    for topic in tracker.topics.values():
+        class_counts[topic["signal_class"]] += 1
+    log.info(
+        "BERTrend classification: noise=%d, weak=%d, strong=%d (total topics=%d)",
+        class_counts.get("noise", 0), class_counts.get("weak", 0),
+        class_counts.get("strong", 0), len(tracker.topics),
     )
 
     # Build results — prioritize weak+growing and strong signals

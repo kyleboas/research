@@ -1300,7 +1300,10 @@ def _detect_novel_tactical_patterns(conn, past_topics):
         recent_patterns = cur.fetchall()
 
     if not recent_patterns:
+        log.info("Tactical patterns: 0 patterns in last 7 days")
         return []
+
+    log.info("Tactical patterns: %d raw patterns in last 7 days", len(recent_patterns))
 
     # Group patterns by action type to find recurring tactical behaviors
     action_groups = {}
@@ -1331,6 +1334,10 @@ def _detect_novel_tactical_patterns(conn, past_topics):
 
     # Filter: only patterns with 2+ sources (corroborated, not noise)
     corroborated = {k: v for k, v in action_groups.items() if len(v["source_ids"]) >= 2}
+    log.info(
+        "Tactical patterns: %d action groups, %d corroborated (2+ sources)",
+        len(action_groups), len(corroborated),
+    )
     if not corroborated:
         return []
 
@@ -1348,6 +1355,7 @@ def _detect_novel_tactical_patterns(conn, past_topics):
 
     vectors = embed(descriptions)
     if not vectors:
+        log.warning("Tactical patterns: embed() returned empty for %d descriptions", len(descriptions))
         return []
 
     candidates = []
@@ -1381,6 +1389,11 @@ def _detect_novel_tactical_patterns(conn, past_topics):
         })
 
     candidates.sort(key=lambda c: -c["novelty_score"])
+    below_threshold = len(corroborated) - len(candidates)
+    log.info(
+        "Tactical patterns: %d candidates above novelty threshold (0.3), %d below",
+        len(candidates), below_threshold,
+    )
     return candidates[:10]
 
 
@@ -1432,7 +1445,7 @@ def detect_trends(conn) -> tuple[list[dict], bool]:
             log.info("BERTrend found no non-noise signals")
 
     except Exception as e:
-        log.warning("BERTrend detection failed (%s): %s", type(e).__name__, e)
+        log.warning("BERTrend detection failed (%s): %s", type(e).__name__, e, exc_info=True)
 
     # ── Detector 2: Tactical pattern novelty detection ───────────────────────
     try:
@@ -1441,7 +1454,7 @@ def detect_trends(conn) -> tuple[list[dict], bool]:
             log.info("Tactical pattern detector found %d novel candidates", len(pattern_candidates))
             all_candidates.extend(pattern_candidates)
     except Exception as e:
-        log.warning("Tactical pattern detection failed (%s): %s", type(e).__name__, e)
+        log.warning("Tactical pattern detection failed (%s): %s", type(e).__name__, e, exc_info=True)
 
     # ── Merge and deduplicate ────────────────────────────────────────────────
     if all_candidates:
@@ -1482,7 +1495,10 @@ def _detect_trends_llm_only(conn, past) -> tuple[list[dict], bool]:
         )
         recent = cur.fetchall()
     if not recent:
+        log.info("LLM-only fallback: 0 sources in last 7 days, nothing to analyze")
         return [], False
+
+    log.info("LLM-only fallback: %d sources in last 7 days", len(recent))
 
     source_catalog: dict[str, list[dict]] = {}
     normalized_catalog: dict[str, list[dict]] = {}
@@ -1512,10 +1528,16 @@ def _detect_trends_llm_only(conn, past) -> tuple[list[dict], bool]:
 
     past_block = "\n".join(f"- {t}" for t in past) if past else "(none)"
 
+    prompt_body = "Recent articles and transcripts:\n" + "\n".join(summaries) + "\n\n"
+    log.info(
+        "LLM-only fallback: sending %d sources, prompt ~%d chars, %d past topics excluded",
+        len(recent), len(prompt_body), len(past),
+    )
+
     try:
         text = ask(
             "You are a football tactics analyst spotting novel trends before they go mainstream.",
-            "Recent articles and transcripts:\n" + "\n".join(summaries) + "\n\n"
+            prompt_body +
             f"Already-covered topics (avoid repeating):\n{past_block}\n\n"
             "Identify the top 5 most novel tactical or strategic trends being tried by football "
             "players or teams. Rank them by novelty — things not yet widely adopted get higher scores.\n\n"
@@ -1557,9 +1579,13 @@ def _detect_trends_llm_only(conn, past) -> tuple[list[dict], bool]:
             c["sources"] = deduped
             valid.append(c)
 
+        log.info(
+            "LLM-only fallback: %d raw candidates from LLM, %d valid after filtering",
+            len(candidates), len(valid),
+        )
         return valid, False
     except Exception as e:
-        log.warning("LLM-only trend detection failed: %s", e)
+        log.warning("LLM-only trend detection failed: %s", e, exc_info=True)
         return [], True
 
 # ══════════════════════════════════════════════
@@ -2109,7 +2135,10 @@ def run_detect(conn, min_new_sources=0):
 
     candidates, had_error = detect_trends(conn)
     if had_error:
-        log.error("Trend detection run failed due to response-format/parsing error")
+        log.error(
+            "Trend detection run failed due to response-format/parsing error "
+            "(candidates returned: %d)", len(candidates),
+        )
         raise SystemExit(1)
     if candidates:
         keyword_weights = _load_feedback_keyword_weights(conn)
