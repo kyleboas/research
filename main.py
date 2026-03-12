@@ -28,13 +28,13 @@ log = logging.getLogger("research")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 ROOT = Path(__file__).resolve().parent
-TRANSCRIPT_KEY = os.environ["TRANSCRIPT_API_KEY"]
-NEWSBLUR_USERNAME = os.environ["NEWSBLUR_USERNAME"]
-NEWSBLUR_PASSWORD = os.environ["NEWSBLUR_PASSWORD"]
+TRANSCRIPT_KEY = os.environ.get("TRANSCRIPT_API_KEY", "")
+NEWSBLUR_USERNAME = os.environ.get("NEWSBLUR_USERNAME", "")
+NEWSBLUR_PASSWORD = os.environ.get("NEWSBLUR_PASSWORD", "")
 
 # ── Cloudflare AI Gateway ──────────────────────────────────────────────────────
-CLOUDFLARE_GATEWAY_URL = os.environ["CLOUDFLARE_GATEWAY_URL"]
-CLOUDFLARE_GATEWAY_TOKEN = os.environ["CLOUDFLARE_GATEWAY_TOKEN"]
+CLOUDFLARE_GATEWAY_URL = os.environ.get("CLOUDFLARE_GATEWAY_URL", "")
+CLOUDFLARE_GATEWAY_TOKEN = os.environ.get("CLOUDFLARE_GATEWAY_TOKEN", "")
 
 # ── Config file (config.json) overrides env-var model defaults ────────────────
 _cfg_path = ROOT / "config.json"
@@ -51,6 +51,21 @@ SUMMARY_MODEL   = os.environ.get("SUMMARY_MODEL")  or _CFG.get("summary_model", 
 REVISION_MODEL  = os.environ.get("REVISION_MODEL")  or _CFG.get("revision_model",  "anthropic/claude-opus-4-6")
 CITATION_MODEL  = os.environ.get("CITATION_MODEL")  or _CFG.get("citation_model",  "google/gemini-2.5-flash")
 EVAL_MODEL      = os.environ.get("EVAL_MODEL")      or _CFG.get("eval_model",      "google/gemini-2.5-flash")
+
+
+def _validate_required_env(step: str):
+    common_required = ["CLOUDFLARE_GATEWAY_URL", "CLOUDFLARE_GATEWAY_TOKEN"]
+    step_required = {
+        "ingest": common_required + ["NEWSBLUR_USERNAME", "NEWSBLUR_PASSWORD", "TRANSCRIPT_API_KEY"],
+        "detect": common_required,
+        "report": common_required,
+        "all": common_required + ["NEWSBLUR_USERNAME", "NEWSBLUR_PASSWORD", "TRANSCRIPT_API_KEY"],
+    }
+    missing = [name for name in step_required.get(step, []) if not os.environ.get(name)]
+    if missing:
+        log.error("Missing required environment variables for step '%s': %s", step, ", ".join(missing))
+        log.error("Set the missing variables in your runtime environment and retry.")
+        raise SystemExit(2)
 
 
 def _normalize_cloudflare_base_urls(raw_url: str):
@@ -2135,6 +2150,8 @@ def main():
         help="When using --step all, also run report in the same process (disabled by default)",
     )
     args = parser.parse_args()
+
+    _validate_required_env(args.step)
 
     conn = _connect_db()
     try:
