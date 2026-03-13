@@ -15,6 +15,8 @@ def main():
     argv = sys.argv[1:]
     if "--apply" not in argv:
         argv.append("--apply")
+    if "--limit" not in argv:
+        argv.extend(["--limit", "2"])
     sys.argv = [sys.argv[0], *argv]
     benchmark_report.main()
 
