@@ -305,6 +305,12 @@ Search for the best report policy on recent topics and apply it to the live pipe
 .venv/bin/python autoresearch_report/optimize_report_policy.py --refresh-auto --limit 3
 ```
 
+The report optimizer now has a built-in safety rule: it only applies a new
+policy when the best candidate beats the baseline by at least the configured
+minimum improvement. Each run is also persisted to Postgres in
+`report_policy_runs`, and summary fields are mirrored into `pipeline_state` for
+dashboard/debug visibility.
+
 Export a real candidate snapshot for manual labeling:
 
 ```bash

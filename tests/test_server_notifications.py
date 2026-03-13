@@ -143,7 +143,11 @@ class ServerNotificationTests(unittest.TestCase):
                     "baseline=78.25",
                     "best=82.50",
                     "delta=4.25",
+                    "min_improvement=1.00",
+                    "policy_changed=yes",
+                    "apply_decision=applied",
                     'best_policy={"max_research_rounds": 3, "subagent_search_limit": 30}',
+                    "applied_policy=/tmp/report_policy_config.json",
                 ]
             )
         )
@@ -153,7 +157,11 @@ class ServerNotificationTests(unittest.TestCase):
         self.assertEqual(summary["baseline"], 78.25)
         self.assertEqual(summary["best"], 82.5)
         self.assertEqual(summary["delta"], 4.25)
+        self.assertEqual(summary["min_improvement"], 1.0)
+        self.assertTrue(summary["policy_changed"])
+        self.assertEqual(summary["apply_decision"], "applied")
         self.assertEqual(summary["best_policy"]["max_research_rounds"], 3)
+        self.assertEqual(summary["applied_policy"], "/tmp/report_policy_config.json")
 
     def test_format_report_benchmark_notification_reports_policy_change(self):
         message = _format_report_benchmark_notification(
@@ -168,14 +176,16 @@ class ServerNotificationTests(unittest.TestCase):
 
     def test_format_report_optimize_notification_reports_policy_change(self):
         message = _format_report_optimize_notification(
-            {"baseline": 78.25, "best": 82.5, "delta": 4.25},
+            {"baseline": 78.25, "best": 82.5, "delta": 4.25, "min_improvement": 1.0, "apply_decision": "applied"},
             policy_changed=True,
         )
 
         self.assertIn("Report policy optimize finished.", message)
         self.assertIn("Score: 78.25 -> 82.50", message)
         self.assertIn("Delta: +4.25", message)
+        self.assertIn("Min improvement: 1.00", message)
         self.assertIn("Policy changed: yes", message)
+        self.assertIn("Apply decision: applied", message)
 
     def test_format_detect_candidates_notification_limits_lines(self):
         candidates = [

@@ -21,6 +21,7 @@ from main import generate_report, set_report_policy
 from report_policy import get_policy_path, load_policy, save_policy
 
 RESULTS_PATH = Path(__file__).resolve().parent / "benchmark_results.tsv"
+DEFAULT_MIN_IMPROVEMENT = 1.0
 
 def load_fixture(path: str | Path):
     payload = json.loads(Path(path).read_text())
@@ -63,6 +64,24 @@ def candidate_policies(base_policy: dict):
             continue
         seen.add(key)
         yield policy
+
+
+def policy_changed(base_policy: dict, candidate_policy: dict) -> bool:
+    return json.dumps(base_policy, sort_keys=True) != json.dumps(candidate_policy, sort_keys=True)
+
+
+def report_policy_apply_decision(
+    *,
+    baseline_score: float,
+    best_score: float,
+    min_improvement: float,
+    policy_changed: bool,
+) -> tuple[bool, str]:
+    if not policy_changed:
+        return False, "no_policy_change"
+    if float(best_score) - float(baseline_score) < float(min_improvement):
+        return False, "below_min_improvement"
+    return True, "applied"
 
 
 def _extract_citations(text: str):
@@ -132,7 +151,7 @@ def benchmark_policy(conn, topics: list[str], policy: dict) -> dict:
 
 
 def append_result_row(fixture_path: Path, topics: list[str], result: dict):
-    header = "timestamp\tfixture\ttopic_count\taverage_score\tpolicy_json\n"
+    header = "timestamp\tfixture\ttopic_count\taverage_score\tdelta\tapplied\tapply_decision\tpolicy_json\n"
     if not RESULTS_PATH.exists() or not RESULTS_PATH.read_text().startswith(header):
         RESULTS_PATH.write_text(header)
     row = "\t".join(
@@ -141,11 +160,115 @@ def append_result_row(fixture_path: Path, topics: list[str], result: dict):
             str(fixture_path),
             str(len(topics)),
             f"{float(result['average_score']):.2f}",
+            f"{float(result.get('delta', 0.0)):.2f}",
+            "yes" if result.get("applied") else "no",
+            str(result.get("apply_decision") or ""),
             json.dumps(result["policy"], sort_keys=True),
         ]
     )
     with RESULTS_PATH.open("a", encoding="utf-8") as handle:
         handle.write(row + "\n")
+
+
+def ensure_report_policy_runs_table(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS report_policy_runs (
+                id BIGSERIAL PRIMARY KEY,
+                fixture_path TEXT NOT NULL,
+                topic_count INT NOT NULL DEFAULT 0,
+                topics JSONB NOT NULL DEFAULT '[]'::jsonb,
+                baseline_score DOUBLE PRECISION NOT NULL,
+                best_score DOUBLE PRECISION NOT NULL,
+                delta DOUBLE PRECISION NOT NULL,
+                min_improvement DOUBLE PRECISION NOT NULL DEFAULT 0,
+                applied BOOLEAN NOT NULL DEFAULT FALSE,
+                apply_decision TEXT NOT NULL DEFAULT '',
+                policy_changed BOOLEAN NOT NULL DEFAULT FALSE,
+                baseline_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+                best_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+                topic_scores JSONB NOT NULL DEFAULT '[]'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_report_policy_runs_created_at
+            ON report_policy_runs (created_at DESC)
+            """
+        )
+
+
+def save_pipeline_state(conn, key: str, value: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO pipeline_state (key, value) VALUES (%s, %s)
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value,
+                updated_at = NOW()
+            """,
+            (key, str(value)),
+        )
+
+
+def record_report_policy_run(
+    conn,
+    *,
+    fixture_path: Path,
+    topics: list[str],
+    baseline_result: dict,
+    best_result: dict,
+    min_improvement: float,
+    applied: bool,
+    apply_decision: str,
+    policy_changed_flag: bool,
+):
+    ensure_report_policy_runs_table(conn)
+    delta = float(best_result["average_score"]) - float(baseline_result["average_score"])
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO report_policy_runs (
+                fixture_path,
+                topic_count,
+                topics,
+                baseline_score,
+                best_score,
+                delta,
+                min_improvement,
+                applied,
+                apply_decision,
+                policy_changed,
+                baseline_policy,
+                best_policy,
+                topic_scores
+            ) VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb)
+            """,
+            (
+                str(fixture_path),
+                len(topics),
+                json.dumps(topics, ensure_ascii=False),
+                float(baseline_result["average_score"]),
+                float(best_result["average_score"]),
+                delta,
+                float(min_improvement),
+                bool(applied),
+                apply_decision,
+                bool(policy_changed_flag),
+                json.dumps(baseline_result["policy"], sort_keys=True),
+                json.dumps(best_result["policy"], sort_keys=True),
+                json.dumps(best_result.get("topics") or [], ensure_ascii=False),
+            ),
+        )
+    save_pipeline_state(conn, "last_report_policy_run_at", datetime.now(UTC).isoformat())
+    save_pipeline_state(conn, "last_report_policy_baseline", f"{float(baseline_result['average_score']):.2f}")
+    save_pipeline_state(conn, "last_report_policy_best", f"{float(best_result['average_score']):.2f}")
+    save_pipeline_state(conn, "last_report_policy_delta", f"{delta:.2f}")
+    save_pipeline_state(conn, "last_report_policy_applied", "yes" if applied else "no")
+    save_pipeline_state(conn, "last_report_policy_apply_decision", apply_decision)
 
 
 def main():
@@ -154,6 +277,12 @@ def main():
     parser.add_argument("--limit", type=int, default=3, help="How many recent report titles to benchmark")
     parser.add_argument("--refresh-auto", action="store_true", help="Refresh the fixture from Postgres before benchmarking")
     parser.add_argument("--apply", action="store_true", help="Write the best policy to report_policy_config.json")
+    parser.add_argument(
+        "--min-improvement",
+        type=float,
+        default=DEFAULT_MIN_IMPROVEMENT,
+        help="Minimum average-score improvement required before applying a new report policy",
+    )
     args = parser.parse_args()
 
     fixture_path = Path(args.fixture)
@@ -173,6 +302,9 @@ def main():
     base_policy = load_policy()
     best_result = None
     baseline_result = None
+    applied = False
+    apply_decision = "not_requested"
+    policy_changed_flag = False
 
     with psycopg.connect(conninfo) as conn:
         baseline_result = benchmark_policy(conn, topics, base_policy)
@@ -181,9 +313,36 @@ def main():
             result = benchmark_policy(conn, topics, policy)
             if result["average_score"] > best_result["average_score"]:
                 best_result = result
+        policy_changed_flag = policy_changed(base_policy, best_result["policy"])
+        if args.apply:
+            applied, apply_decision = report_policy_apply_decision(
+                baseline_score=baseline_result["average_score"],
+                best_score=best_result["average_score"],
+                min_improvement=float(args.min_improvement),
+                policy_changed=policy_changed_flag,
+            )
+            if applied:
+                saved_path = save_policy(best_result["policy"])
+            else:
+                saved_path = None
+        record_report_policy_run(
+            conn,
+            fixture_path=fixture_path,
+            topics=topics,
+            baseline_result=baseline_result,
+            best_result=best_result,
+            min_improvement=float(args.min_improvement),
+            applied=applied,
+            apply_decision=apply_decision,
+            policy_changed_flag=policy_changed_flag,
+        )
+        conn.commit()
 
     assert best_result is not None
     assert baseline_result is not None
+    best_result["delta"] = round(best_result["average_score"] - baseline_result["average_score"], 2)
+    best_result["applied"] = applied
+    best_result["apply_decision"] = apply_decision
     append_result_row(fixture_path, topics, best_result)
 
     print(f"fixture={fixture_path.resolve()}")
@@ -192,6 +351,9 @@ def main():
     print(f"baseline={baseline_result['average_score']:.2f}")
     print(f"best={best_result['average_score']:.2f}")
     print(f"delta={best_result['average_score'] - baseline_result['average_score']:.2f}")
+    print(f"min_improvement={float(args.min_improvement):.2f}")
+    print(f"policy_changed={'yes' if policy_changed_flag else 'no'}")
+    print(f"apply_decision={apply_decision}")
     print("best_policy=" + json.dumps(best_result["policy"], sort_keys=True))
     print("topic_scores:")
     for item in best_result["topics"]:
@@ -209,8 +371,7 @@ def main():
             )
         )
 
-    if args.apply:
-        saved_path = save_policy(best_result["policy"])
+    if args.apply and applied:
         print(f"applied_policy={saved_path.resolve()}")
 
 

@@ -216,7 +216,11 @@ def _parse_report_benchmark_summary(log_text):
         "baseline": r"baseline=(-?\d+\.\d+)",
         "best": r"best=(-?\d+\.\d+)",
         "delta": r"delta=(-?\d+\.\d+)",
+        "min_improvement": r"min_improvement=(-?\d+\.\d+)",
+        "policy_changed": r"policy_changed=(yes|no)",
+        "apply_decision": r"apply_decision=([a-z_]+)",
         "best_policy": r"best_policy=(\{.+\})",
+        "applied_policy": r"applied_policy=(.+)",
     }
     for key, pattern in patterns.items():
         match = re.search(pattern, text)
@@ -227,7 +231,9 @@ def _parse_report_benchmark_summary(log_text):
                 result[key] = json.loads(match.group(1))
             except json.JSONDecodeError:
                 result[key] = match.group(1).strip()
-        elif key in {"fixture", "policy_path"}:
+        elif key == "policy_changed":
+            result[key] = match.group(1).strip() == "yes"
+        elif key in {"fixture", "policy_path", "apply_decision", "applied_policy"}:
             result[key] = match.group(1).strip()
         else:
             result[key] = float(match.group(1))
@@ -254,7 +260,11 @@ def _format_report_optimize_notification(summary, *, policy_changed: bool):
         lines.append(f"• Score: {summary['baseline']:.2f} -> {summary['best']:.2f}")
     if summary.get("delta") is not None:
         lines.append(f"• Delta: {summary['delta']:+.2f}")
+    if summary.get("min_improvement") is not None:
+        lines.append(f"• Min improvement: {summary['min_improvement']:.2f}")
     lines.append(f"• Policy changed: {'yes' if policy_changed else 'no'}")
+    if summary.get("apply_decision"):
+        lines.append(f"• Apply decision: {summary['apply_decision']}")
     return "\n".join(lines)
 
 

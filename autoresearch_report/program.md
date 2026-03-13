@@ -62,8 +62,13 @@ The repo now has a basic closed loop for report policy tuning:
    compares the resulting scores.
 2. `optimize_report_policy.py --refresh-auto --limit 3`
    runs the same search but applies the best policy back to
-   `report_policy_config.json`.
+   `report_policy_config.json` only when the best result clears the minimum
+   improvement threshold.
 3. Railway/dashboard can trigger report policy eval, benchmark, and optimize
    runs, and Discord receives summaries when those runs finish.
+
+Every benchmark/optimize run is also stored in Postgres (`report_policy_runs`)
+so the tuning loop has a persistent history instead of relying only on logs or
+TSV artifacts.
 
 Keep the benchmark topic count small enough to remain reasonable on Railway.
