@@ -135,7 +135,7 @@ Required environment variables (see `env.example`):
 - `TRANSCRIPT_API_KEY`
 - database connection (`DATABASE_URL` or Railway-style `PG*` variables)
 
-Model selection defaults come from `config.json` and can be overridden via env vars (`MODEL`, `LEAD_MODEL`, `EMBED_MODEL`, etc.).
+Model selection defaults come from `config.json` and can be overridden via env vars (`MODEL`, `LEAD_MODEL`, `EMBED_MODEL`, etc.). Use exact provider-prefixed model IDs in `config.json` and env vars; the app no longer rewrites alias model names at runtime.
 
 ## Database setup
 
@@ -171,6 +171,7 @@ Run one step:
 
 ```bash
 python main.py --step ingest
+python main.py --step backfill
 python main.py --step detect
 python main.py --step report
 ```
@@ -185,7 +186,9 @@ Notes:
 
 - default step is `ingest`.
 - `--step all` runs ingest + detect.
+- `--step backfill` reprocesses recent sources that are missing chunk embeddings.
 - add `--allow-report-after-detect` to include report generation in the same run.
+- `--backfill-days N` and `--backfill-limit N` control the backfill scan/reprocess window.
 - `--min-new-sources-for-detect N` skips detect when latest ingest added fewer than `N` sources.
 
 ## Dashboard server

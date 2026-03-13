@@ -4,9 +4,9 @@
   "embed_model": "openai/text-embedding-3-small",
   "signal_model": "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
 
-  "synthesis_model": "anthropic/claude-opus-4",
-  "summary_model": "anthropic/claude-sonnet-4",
-  "revision_model": "anthropic/claude-opus-4",
+  "synthesis_model": "anthropic/claude-sonnet-4-6",
+  "summary_model": "anthropic/claude-sonnet-4-6",
+  "revision_model": "anthropic/claude-sonnet-4-6",
   "citation_model": "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
   "eval_model": "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
 

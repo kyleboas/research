@@ -37,20 +37,23 @@ NEWSBLUR_PASSWORD = os.environ.get("NEWSBLUR_PASSWORD", "")
 # ── Cloudflare AI Gateway ──────────────────────────────────────────────────────
 CLOUDFLARE_GATEWAY_URL = os.environ.get("CLOUDFLARE_GATEWAY_URL", "")
 CLOUDFLARE_GATEWAY_TOKEN = os.environ.get("CLOUDFLARE_GATEWAY_TOKEN", "")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 # ── Config file (config.json) overrides env-var model defaults ────────────────
 _cfg_path = ROOT / "config.json"
 _CFG: dict = json.loads(_cfg_path.read_text()) if _cfg_path.exists() else {}
 
 LEAD_MODEL    = os.environ.get("LEAD_MODEL")    or _CFG.get("lead_model",    "deepseek/deepseek-r1")
-MODEL         = os.environ.get("MODEL")         or _CFG.get("model",         "google/gemini-2.5-flash")
-EMBED_MODEL   = os.environ.get("EMBED_MODEL")   or _CFG.get("embed_model",   "workers-ai/@cf/baai/bge-m3")
+MODEL         = os.environ.get("MODEL")         or _CFG.get("model",         "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast")
+EMBED_MODEL   = os.environ.get("EMBED_MODEL")   or _CFG.get("embed_model",   "openai/text-embedding-3-small")
 SIGNAL_MODEL  = os.environ.get("SIGNAL_MODEL")  or _CFG.get("signal_model",  "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast")
 
-# ── Per-step model overrides (quality-critical steps use Opus/Sonnet) ─────────
-SYNTHESIS_MODEL = os.environ.get("SYNTHESIS_MODEL") or _CFG.get("synthesis_model", "anthropic/claude-opus-4-6")
+# ── Per-step model overrides (budget-conscious defaults use Sonnet) ───────────
+SYNTHESIS_MODEL = os.environ.get("SYNTHESIS_MODEL") or _CFG.get("synthesis_model", "anthropic/claude-sonnet-4-6")
 SUMMARY_MODEL   = os.environ.get("SUMMARY_MODEL")  or _CFG.get("summary_model",   "anthropic/claude-sonnet-4-6")
-REVISION_MODEL  = os.environ.get("REVISION_MODEL")  or _CFG.get("revision_model",  "anthropic/claude-opus-4-6")
+REVISION_MODEL  = os.environ.get("REVISION_MODEL")  or _CFG.get("revision_model",  "anthropic/claude-sonnet-4-6")
 CITATION_MODEL  = os.environ.get("CITATION_MODEL")  or _CFG.get("citation_model",  "google/gemini-2.5-flash")
 EVAL_MODEL      = os.environ.get("EVAL_MODEL")      or _CFG.get("eval_model",      "google/gemini-2.5-flash")
 
@@ -59,6 +62,7 @@ def _validate_required_env(step: str):
     common_required = ["CLOUDFLARE_GATEWAY_URL", "CLOUDFLARE_GATEWAY_TOKEN"]
     step_required = {
         "ingest": common_required + ["NEWSBLUR_USERNAME", "NEWSBLUR_PASSWORD", "TRANSCRIPT_API_KEY"],
+        "backfill": common_required,
         "detect": common_required,
         "report": common_required,
         "all": common_required + ["NEWSBLUR_USERNAME", "NEWSBLUR_PASSWORD", "TRANSCRIPT_API_KEY"],
@@ -102,15 +106,48 @@ def _normalize_cloudflare_base_urls(raw_url: str):
 
 def _make_client(base_url: str):
     """Build an OpenAI-compatible client routed through Cloudflare AI Gateway."""
-    default_headers = {}
-    if CLOUDFLARE_GATEWAY_TOKEN:
-        default_headers["cf-aig-authorization"] = f"Bearer {CLOUDFLARE_GATEWAY_TOKEN}"
+    return openai.OpenAI(api_key="", base_url=base_url)
 
-    return openai.OpenAI(
-        api_key="",
-        base_url=base_url,
-        default_headers=default_headers,
-    )
+
+_PROVIDER_API_KEYS = {
+    "anthropic": ANTHROPIC_API_KEY,
+    "deepseek": DEEPSEEK_API_KEY,
+    "openai": OPENAI_API_KEY,
+}
+
+def _model_provider(model_name: str) -> str:
+    model = (model_name or "").strip()
+    if "/" not in model:
+        return ""
+    provider, _ = model.split("/", 1)
+    return provider
+
+
+def _provider_api_key_for_model(model_name: str) -> str:
+    return _PROVIDER_API_KEYS.get(_model_provider(model_name), "").strip()
+
+
+def _provider_api_env_for_model(model_name: str) -> str:
+    provider = _model_provider(model_name)
+    if provider == "anthropic":
+        return "ANTHROPIC_API_KEY"
+    if provider == "deepseek":
+        return "DEEPSEEK_API_KEY"
+    if provider == "openai":
+        return "OPENAI_API_KEY"
+    return ""
+
+
+def _log_auth_hint_for_model(model_name: str):
+    env_name = _provider_api_env_for_model(model_name)
+    provider = _model_provider(model_name)
+    if env_name and not os.environ.get(env_name):
+        log.error(
+            "Model '%s' failed authentication. Add %s or configure %s access in Cloudflare AI Gateway.",
+            model_name,
+            env_name,
+            provider or "provider",
+        )
 
 
 def _resolve_embed_model(base_url: str, model_name: str) -> str:
@@ -135,37 +172,23 @@ def _resolve_embed_model(base_url: str, model_name: str) -> str:
     return model
 
 
-def _is_invalid_provider_error(exc: Exception) -> bool:
-    """Detect Cloudflare compat errors caused by unsupported provider prefixes."""
-    msg = str(exc).lower()
-    return "invalid provider" in msg or "'code': 2008" in msg or '"code": 2008' in msg
-
-
 def _is_bad_format_error(exc: Exception) -> bool:
     """Detect Cloudflare compat payload-format errors (code 2019)."""
     msg = str(exc).lower()
     return "bad format" in msg or "'code': 2019" in msg or '"code": 2019' in msg
 
 
-def _fallback_model_without_provider(model_name: str) -> str | None:
-    """Return a provider-less model fallback when model is provider-prefixed."""
-    model = (model_name or "").strip()
-    if "/" not in model:
-        return None
-    _, fallback = model.split("/", 1)
-    return fallback.strip() or None
-
-
 def _chat_completion_create(*, model: str, max_tokens: int, messages: list[dict], reasoning_effort: str | None = None):
-    """Create chat completion with compat-route fallback for provider-prefix issues."""
-    client = get_chat_client()
+    """Create a chat completion against the exact configured model path."""
+    model_name = (model or "").strip()
+    client = get_chat_client(model_name)
     # max_completion_tokens is only valid for OpenAI reasoning models (o-series).
     # All other providers (Gemini, Claude, Workers AI, etc.) use the standard
     # max_tokens parameter; sending max_completion_tokens causes a 400 "Chat
     # completion bad format" error (Cloudflare error code 2019).
     tokens_key = "max_completion_tokens" if reasoning_effort else "max_tokens"
     kwargs = {
-        "model": model,
+        "model": model_name,
         tokens_key: max_tokens,
         "messages": messages,
     }
@@ -201,21 +224,13 @@ def _chat_completion_create(*, model: str, max_tokens: int, messages: list[dict]
 
     try:
         return _call_with_bad_format_retries(kwargs)
-    except Exception as exc:
-        fallback_model = _fallback_model_without_provider(model)
-        if "/compat" not in (_chat_base_url or "") or not fallback_model or not _is_invalid_provider_error(exc):
-            raise
-        log.warning(
-            "Retrying chat completion after invalid provider for model '%s' on compat route; fallback='%s'",
-            model,
-            fallback_model,
-        )
-        kwargs["model"] = fallback_model
-        return _call_with_bad_format_retries(kwargs)
+    except openai.AuthenticationError:
+        _log_auth_hint_for_model(model_name)
+        raise
 
 
-_chat_client = None
-_embed_client = None
+_chat_clients: dict[tuple[str, str, bool], openai.OpenAI] = {}
+_embed_clients: dict[tuple[str, str, bool], openai.OpenAI] = {}
 _chat_base_url, _embed_base_url = _normalize_cloudflare_base_urls(CLOUDFLARE_GATEWAY_URL)
 _resolved_embed_model = _resolve_embed_model(_embed_base_url, EMBED_MODEL)
 
@@ -229,18 +244,42 @@ log.info("Model config: lead=%s eval=%s summary=%s synthesis=%s citation=%s revi
          LEAD_MODEL, EVAL_MODEL, SUMMARY_MODEL, SYNTHESIS_MODEL, CITATION_MODEL, REVISION_MODEL)
 
 
-def get_chat_client():
-    global _chat_client
-    if _chat_client is None:
-        _chat_client = _make_client(_chat_base_url)
-    return _chat_client
+def _client_cache_key(base_url: str, model_name: str) -> tuple[str, str, bool]:
+    provider_key = _provider_api_key_for_model(model_name)
+    return (base_url, provider_key, bool(CLOUDFLARE_GATEWAY_TOKEN))
 
 
-def get_embed_client():
-    global _embed_client
-    if _embed_client is None:
-        _embed_client = _make_client(_embed_base_url)
-    return _embed_client
+def _client_headers(model_name: str) -> dict:
+    provider_key = _provider_api_key_for_model(model_name)
+    if provider_key:
+        return {"cf-aig-authorization": f"Bearer {CLOUDFLARE_GATEWAY_TOKEN}"} if CLOUDFLARE_GATEWAY_TOKEN else {}
+    if CLOUDFLARE_GATEWAY_TOKEN:
+        return {"cf-aig-authorization": f"Bearer {CLOUDFLARE_GATEWAY_TOKEN}"}
+    return {}
+
+
+def get_chat_client(model_name: str):
+    key = _client_cache_key(_chat_base_url, model_name)
+    if key not in _chat_clients:
+        provider_key = _provider_api_key_for_model(model_name)
+        _chat_clients[key] = openai.OpenAI(
+            api_key=provider_key,
+            base_url=_chat_base_url,
+            default_headers=_client_headers(model_name),
+        )
+    return _chat_clients[key]
+
+
+def get_embed_client(model_name: str = _resolved_embed_model):
+    key = _client_cache_key(_embed_base_url, model_name)
+    if key not in _embed_clients:
+        provider_key = _provider_api_key_for_model(model_name)
+        _embed_clients[key] = openai.OpenAI(
+            api_key=provider_key,
+            base_url=_embed_base_url,
+            default_headers=_client_headers(model_name),
+        )
+    return _embed_clients[key]
 
 
 CITATION_FMT = "Cite every claim as [S<source_id>:C<chunk_id>]. Never cite IDs not in the provided context."
@@ -1022,6 +1061,120 @@ def chunk_and_embed(conn, source_id, text):
 
     if all_patterns:
         log.info("Extracted %d tactical patterns from source_id=%s", len(all_patterns), source_id)
+
+
+def _bertrend_lookback_days() -> int:
+    bertrend_cfg = _CFG.get("bertrend", {}) if isinstance(_CFG.get("bertrend"), dict) else {}
+    try:
+        return max(1, int(bertrend_cfg.get("lookback_days", 14)))
+    except (TypeError, ValueError):
+        return 14
+
+
+def _count_recent_embedded_chunks(conn, lookback_days: int) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) "
+            "FROM chunks c "
+            "JOIN sources s ON s.id = c.source_id "
+            "WHERE s.created_at > NOW() - make_interval(days => %s) "
+            "AND c.embedding IS NOT NULL",
+            (lookback_days,),
+        )
+        return int(cur.fetchone()[0] or 0)
+
+
+def _select_sources_missing_embeddings(conn, lookback_days: int, limit: int):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT s.id, s.title, s.content, COALESCE(s.metadata->>'embed_status', ''), "
+            "COUNT(c.id) FILTER (WHERE c.embedding IS NOT NULL) AS embedded_chunks, "
+            "COUNT(c.id) AS total_chunks "
+            "FROM sources s "
+            "LEFT JOIN chunks c ON c.source_id = s.id "
+            "WHERE s.created_at > NOW() - make_interval(days => %s) "
+            "GROUP BY s.id, s.title, s.content, s.metadata, s.created_at "
+            "HAVING COUNT(c.id) FILTER (WHERE c.embedding IS NOT NULL) = 0 "
+            "ORDER BY s.created_at DESC "
+            "LIMIT %s",
+            (lookback_days, limit),
+        )
+        return cur.fetchall()
+
+
+def _reset_source_embeddings(conn, source_id: int):
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM tactical_patterns WHERE source_id = %s", (source_id,))
+        cur.execute("DELETE FROM chunks WHERE source_id = %s", (source_id,))
+    conn.commit()
+
+
+def run_backfill(conn, lookback_days: int = 14, limit: int = 200) -> int:
+    candidates = _select_sources_missing_embeddings(conn, lookback_days=lookback_days, limit=limit)
+    if not candidates:
+        log.info(
+            "Backfill skipped: no recent sources missing embeddings (lookback=%dd, limit=%d)",
+            lookback_days,
+            limit,
+        )
+        return 0
+
+    log.info(
+        "Backfill starting: %d recent sources missing embeddings (lookback=%dd, limit=%d)",
+        len(candidates),
+        lookback_days,
+        limit,
+    )
+    repaired = 0
+    skipped = 0
+    failed = 0
+
+    for source_id, title, content, embed_status, embedded_chunks, total_chunks in candidates:
+        title_preview = (title or "Untitled source")[:80]
+        if not (content or "").strip():
+            skipped += 1
+            log.warning("Backfill skipping source_id=%s title=%r: empty content", source_id, title_preview)
+            set_source_embed_status(conn, source_id, "embed_skipped", "Backfill skipped because source content is empty")
+            continue
+
+        log.info(
+            "Backfill reprocessing source_id=%s title=%r status=%s embedded_chunks=%s total_chunks=%s",
+            source_id,
+            title_preview,
+            embed_status or "(unset)",
+            embedded_chunks,
+            total_chunks,
+        )
+        _reset_source_embeddings(conn, source_id)
+        chunk_and_embed(conn, source_id, content)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FILTER (WHERE embedding IS NOT NULL), COUNT(*) "
+                "FROM chunks WHERE source_id = %s",
+                (source_id,),
+            )
+            embedded_after, total_after = cur.fetchone()
+
+        if embedded_after:
+            repaired += 1
+        else:
+            failed += 1
+            log.warning(
+                "Backfill did not restore embeddings for source_id=%s title=%r (chunks=%s)",
+                source_id,
+                title_preview,
+                total_after,
+            )
+
+    log.info(
+        "Backfill summary: repaired=%d failed=%d skipped=%d candidates=%d",
+        repaired,
+        failed,
+        skipped,
+        len(candidates),
+    )
+    return repaired
 
 # ══════════════════════════════════════════════
 # Hybrid retrieval (semantic + keyword via RRF)
@@ -2136,7 +2289,7 @@ def run_ingest(conn):
     return new
 
 
-def run_detect(conn, min_new_sources=0):
+def run_detect(conn, min_new_sources=0, backfill_days: int | None = None, backfill_limit: int = 200):
     if min_new_sources > 0:
         latest_new = load_state(conn, "last_ingest_new_sources")
         try:
@@ -2150,6 +2303,15 @@ def run_detect(conn, min_new_sources=0):
                 min_new_sources,
             )
             return
+
+    lookback_days = backfill_days or _bertrend_lookback_days()
+    recent_embedded_chunks = _count_recent_embedded_chunks(conn, lookback_days)
+    if recent_embedded_chunks == 0:
+        log.warning(
+            "Detect found 0 recent embedded chunks for BERTrend lookback=%dd. Triggering backfill.",
+            lookback_days,
+        )
+        run_backfill(conn, lookback_days=lookback_days, limit=backfill_limit)
 
     candidates, had_error = detect_trends(conn)
     if had_error:
@@ -2287,9 +2449,21 @@ def main():
     parser = argparse.ArgumentParser(description="Football research pipeline")
     parser.add_argument(
         "--step",
-        choices=["ingest", "detect", "report", "all"],
+        choices=["ingest", "backfill", "detect", "report", "all"],
         default="ingest",
         help="Pipeline step to run (default: ingest)",
+    )
+    parser.add_argument(
+        "--backfill-days",
+        type=int,
+        default=_bertrend_lookback_days(),
+        help="Days of recent sources to scan for missing embeddings during backfill (default: bertrend.lookback_days)",
+    )
+    parser.add_argument(
+        "--backfill-limit",
+        type=int,
+        default=200,
+        help="Maximum number of sources to reprocess during backfill (default: 200)",
     )
     parser.add_argument(
         "--min-new-sources-for-detect",
@@ -2311,13 +2485,25 @@ def main():
         _ensure_schema(conn)
         if args.step == "ingest":
             run_ingest(conn)
+        elif args.step == "backfill":
+            run_backfill(conn, lookback_days=args.backfill_days, limit=args.backfill_limit)
         elif args.step == "detect":
-            run_detect(conn, min_new_sources=args.min_new_sources_for_detect)
+            run_detect(
+                conn,
+                min_new_sources=args.min_new_sources_for_detect,
+                backfill_days=args.backfill_days,
+                backfill_limit=args.backfill_limit,
+            )
         elif args.step == "report":
             run_report(conn)
         else:
             run_ingest(conn)
-            run_detect(conn, min_new_sources=args.min_new_sources_for_detect)
+            run_detect(
+                conn,
+                min_new_sources=args.min_new_sources_for_detect,
+                backfill_days=args.backfill_days,
+                backfill_limit=args.backfill_limit,
+            )
             if args.allow_report_after_detect:
                 run_report(conn)
             else:
