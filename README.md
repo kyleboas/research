@@ -137,6 +137,12 @@ Required environment variables (see `env.example`):
 
 Model selection defaults come from `config.json` and can be overridden via env vars (`MODEL`, `LEAD_MODEL`, `EMBED_MODEL`, etc.). Use exact provider-prefixed model IDs in `config.json` and env vars; the app no longer rewrites alias model names at runtime.
 
+Cloudflare AI Gateway note:
+
+- this repo is configured to work with AI Gateway Unified Billing for Anthropic and Workers AI
+- the default lead/report model is `anthropic/claude-sonnet-4-6` because it works on the unified `/compat` route in this setup
+- DeepSeek is not a default path here; if you intentionally switch to a DeepSeek model, treat it as a BYOK/provider-specific configuration unless your Cloudflare account explicitly supports it on Unified Billing
+
 ## Database setup
 
 1. Enable `vector` extension in Postgres/Supabase.

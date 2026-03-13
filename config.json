@@ -1,5 +1,5 @@
 {
-  "lead_model": "deepseek/deepseek-r1",
+  "lead_model": "anthropic/claude-sonnet-4-6",
   "model": "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
   "embed_model": "openai/text-embedding-3-small",
   "signal_model": "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",

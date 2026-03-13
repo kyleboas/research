@@ -45,7 +45,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 _cfg_path = ROOT / "config.json"
 _CFG: dict = json.loads(_cfg_path.read_text()) if _cfg_path.exists() else {}
 
-LEAD_MODEL    = os.environ.get("LEAD_MODEL")    or _CFG.get("lead_model",    "deepseek/deepseek-r1")
+LEAD_MODEL    = os.environ.get("LEAD_MODEL")    or _CFG.get("lead_model",    "anthropic/claude-sonnet-4-6")
 MODEL         = os.environ.get("MODEL")         or _CFG.get("model",         "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast")
 EMBED_MODEL   = os.environ.get("EMBED_MODEL")   or _CFG.get("embed_model",   "openai/text-embedding-3-small")
 SIGNAL_MODEL  = os.environ.get("SIGNAL_MODEL")  or _CFG.get("signal_model",  "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast")
