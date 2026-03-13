@@ -21,10 +21,30 @@ import openai, psycopg
 from dotenv import load_dotenv
 from db_conn import resolve_database_conninfo
 from detect_policy import compute_final_score, passes_report_gate
+from detect_detectors import (
+    detect_novel_tactical_patterns as detect_novel_tactical_patterns_impl,
+    detect_trends as detect_trends_impl,
+    detect_trends_llm_only as detect_trends_llm_only_impl,
+)
+from detect_orchestration import run_detect as run_detect_impl, run_rescore as run_rescore_impl
+from detect_persistence import (
+    effective_source_diversity as effective_source_diversity_impl,
+    normalize_trend_text as normalize_trend_text_impl,
+    parse_rescore_statuses as parse_rescore_statuses_impl,
+    rescored_trend_candidate_values as rescored_trend_candidate_values_impl,
+    trend_fingerprint as trend_fingerprint_impl,
+    upsert_trend_candidate as upsert_trend_candidate_impl,
+)
+from detect_scoring import (
+    feedback_adjustment_for_trend as feedback_adjustment_for_trend_impl,
+    load_feedback_embeddings as load_feedback_embeddings_impl,
+    load_feedback_keyword_weights as load_feedback_keyword_weights_impl,
+    tokenize_feedback_text as tokenize_feedback_text_impl,
+)
 from trend_detection import run_bertrend_detection, describe_signals_with_llm
 from article_extractor import extract_article, should_extract
 from tactical_extraction import chunk_with_context, extract_tactical_patterns, extract_tactical_context
-from novelty_scoring import compute_novelty_score, update_baseline, score_tactical_pattern_novelty
+from novelty_scoring import update_baseline
 
 log = logging.getLogger("research")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -420,14 +440,11 @@ def build_source_dedupe_values(item: dict) -> dict:
 
 
 def normalize_trend_text(trend: str) -> str:
-    text = (trend or "").strip().lower()
-    text = re.sub(r"[^a-z0-9]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    return normalize_trend_text_impl(trend)
 
 
 def trend_fingerprint(trend: str) -> str:
-    normalized = normalize_trend_text(trend)
-    return _sha256_text(normalized) if normalized else ""
+    return trend_fingerprint_impl(trend)
 
 # ══════════════════════════════════════════════
 # NewsBlur RSS ingestion
@@ -1227,89 +1244,11 @@ def run_backfill(conn, lookback_days: int = 14, limit: int = 200) -> int:
 
 
 def upsert_trend_candidate(conn, candidate: dict, feedback_adjustment: int):
-    fingerprint = trend_fingerprint(candidate["trend"])
-    base_score = int(candidate["score"])
-    novelty = candidate.get("novelty_score")
-    source_diversity = candidate.get("source_diversity", len(candidate.get("sources") or []))
-
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT id, status, feedback_adjustment, score, source_diversity FROM trend_candidates WHERE trend_fingerprint = %s LIMIT 1",
-            (fingerprint,),
-        )
-        existing = cur.fetchone()
-        if existing:
-            candidate_id, existing_status, existing_feedback, existing_score, existing_source_diversity = existing
-            stored_score = max(existing_score or 0, base_score)
-            stored_diversity = max(existing_source_diversity or 0, source_diversity)
-            stored_feedback = existing_feedback if existing_feedback not in (None, 0) else feedback_adjustment
-            final_score = compute_final_score(
-                base_score=stored_score,
-                novelty_score=novelty,
-                feedback_adjustment=stored_feedback,
-                source_diversity=stored_diversity,
-            )
-            next_status = "reported" if existing_status == "reported" else "pending"
-            cur.execute(
-                """
-                UPDATE trend_candidates
-                SET trend = %s,
-                    reasoning = %s,
-                    score = %s,
-                    feedback_adjustment = %s,
-                    final_score = %s,
-                    novelty_score = %s,
-                    source_diversity = %s,
-                    status = %s,
-                    detected_at = NOW()
-                WHERE id = %s
-                RETURNING id, final_score
-                """,
-                (
-                    candidate["trend"],
-                    candidate.get("reasoning"),
-                    stored_score,
-                    stored_feedback,
-                    final_score,
-                    novelty,
-                    stored_diversity,
-                    next_status,
-                    candidate_id,
-                ),
-            )
-            row = cur.fetchone()
-            return row[0], int(row[1] or final_score), stored_diversity
-
-        final_score = compute_final_score(
-            base_score=base_score,
-            novelty_score=novelty,
-            feedback_adjustment=feedback_adjustment,
-            source_diversity=source_diversity,
-        )
-        cur.execute(
-            """
-            INSERT INTO trend_candidates
-            (trend_fingerprint, trend, reasoning, score, feedback_adjustment, final_score, novelty_score, source_diversity)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id, final_score
-            """,
-            (
-                fingerprint,
-                candidate["trend"],
-                candidate.get("reasoning"),
-                base_score,
-                feedback_adjustment,
-                final_score,
-                novelty,
-                source_diversity,
-            ),
-        )
-        row = cur.fetchone()
-        return row[0], int(row[1] or final_score), source_diversity
+    return upsert_trend_candidate_impl(conn, candidate, feedback_adjustment)
 
 
 def _effective_source_diversity(stored_source_diversity: int | None, linked_source_count: int | None) -> int:
-    return max(int(stored_source_diversity or 0), int(linked_source_count or 0))
+    return effective_source_diversity_impl(stored_source_diversity, linked_source_count)
 
 
 def _rescored_trend_candidate_values(
@@ -1320,19 +1259,17 @@ def _rescored_trend_candidate_values(
     linked_source_count: int | None,
     novelty_score: float | None,
 ) -> tuple[int, int]:
-    source_diversity = _effective_source_diversity(stored_source_diversity, linked_source_count)
-    final_score = compute_final_score(
-        base_score=int(base_score),
+    return rescored_trend_candidate_values_impl(
+        base_score=base_score,
+        feedback_adjustment=feedback_adjustment,
+        stored_source_diversity=stored_source_diversity,
+        linked_source_count=linked_source_count,
         novelty_score=novelty_score,
-        feedback_adjustment=int(feedback_adjustment or 0),
-        source_diversity=source_diversity,
     )
-    return source_diversity, final_score
 
 
 def _parse_rescore_statuses(raw: str | None) -> list[str] | None:
-    statuses = [part.strip() for part in str(raw or "").split(",") if part.strip()]
-    return statuses or None
+    return parse_rescore_statuses_impl(raw)
 
 # ══════════════════════════════════════════════
 # Hybrid retrieval (semantic + keyword via RRF)
@@ -1482,87 +1419,21 @@ def load_state(conn, key):
 # ══════════════════════════════════════════════
 
 def _tokenize_feedback_text(text: str) -> list[str]:
-    """Return unigrams (>2 chars) and bigrams from text for keyword matching."""
-    words = [t for t in re.findall(r"[a-z0-9']+", text.lower()) if len(t) > 2]
-    # Include bigrams for better phrase-level matching
-    bigrams = [f"{words[i]}_{words[i+1]}" for i in range(len(words) - 1)]
-    return words + bigrams
+    return tokenize_feedback_text_impl(text)
 
 
 def _load_feedback_keyword_weights(conn) -> dict[str, float]:
-    """Load time-decayed keyword weights from historical feedback.
-
-    Recent feedback is weighted more heavily via exponential time decay.
-    Bigrams are included alongside unigrams for phrase-level matching.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT trend_text, feedback_value, created_at FROM trend_feedback ORDER BY created_at DESC LIMIT 2000"
-        )
-        rows = cur.fetchall()
-
-    if not rows:
-        return {}
-
-    now = datetime.now(UTC) if hasattr(datetime, "now") else datetime.utcnow().replace(tzinfo=UTC)
-    half_life_days = 14.0  # feedback half-life: 14 days
-    decay_k = 0.693 / half_life_days  # ln(2) / half_life
-
-    weights: dict[str, float] = {}
-    for trend_text, feedback, created_at in rows:
-        if not trend_text or not feedback:
-            continue
-        # Time decay: recent feedback counts more
-        if created_at and hasattr(created_at, "timestamp"):
-            age_days = max(0.0, (now - created_at).total_seconds() / 86400.0)
-        else:
-            age_days = 0.0
-        time_weight = math.exp(-decay_k * age_days)  # 1.0 for today, 0.5 at 14 days, 0.25 at 28 days
-
-        for token in set(_tokenize_feedback_text(trend_text)):
-            weights[token] = weights.get(token, 0.0) + float(feedback) * time_weight
-
-    return weights
+    return load_feedback_keyword_weights_impl(conn)
 
 
 def _load_feedback_embeddings(conn) -> list[tuple[list[float], int]]:
-    """Load recent feedback trend texts and their embeddings for semantic matching.
-
-    Returns list of (embedding_vector, feedback_value) tuples.
-    Generates embeddings on the fly for feedback trends (batched).
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            """SELECT DISTINCT ON (trend_text) trend_text, feedback_value
-               FROM trend_feedback
-               ORDER BY trend_text, created_at DESC
-               LIMIT 200"""
-        )
-        rows = cur.fetchall()
-
-    if not rows:
-        return []
-
-    texts = [r[0] for r in rows if r[0]]
-    feedbacks = [int(r[1]) for r in rows if r[0]]
-    if not texts:
-        return []
-
-    # Batch embed all feedback trend texts
-    vectors = embed(texts)
-    if not vectors:
-        return []
-
-    return list(zip(vectors, feedbacks))
+    return load_feedback_embeddings_impl(conn, embed_fn=embed)
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
+    from detect_scoring import cosine_similarity
+
+    return cosine_similarity(a, b)
 
 
 def _feedback_adjustment_for_trend(
@@ -1570,352 +1441,33 @@ def _feedback_adjustment_for_trend(
     keyword_weights: dict[str, float],
     feedback_embeddings: list[tuple[list[float], int]] | None = None,
 ) -> int:
-    """Compute feedback adjustment combining keyword matching + semantic similarity.
-
-    Keyword component: sum of time-decayed keyword weights for matching tokens/bigrams.
-    Semantic component: cosine similarity between new trend and past feedback trends,
-      weighted by feedback value. Only high-similarity matches (>0.6) contribute.
-
-    Combined adjustment is clamped to [-50, +50].
-    """
-    adjustment = 0.0
-
-    # --- Keyword component (bigrams weighted 2x) ---
-    if keyword_weights:
-        tokens = set(_tokenize_feedback_text(trend or ""))
-        for token in tokens:
-            w = keyword_weights.get(token, 0.0)
-            if "_" in token:  # bigram — weight more heavily
-                w *= 2.0
-            adjustment += w
-
-    # --- Semantic similarity component ---
-    if feedback_embeddings and trend:
-        trend_vectors = embed([trend])
-        if trend_vectors:
-            trend_vec = trend_vectors[0]
-            semantic_adj = 0.0
-            for fb_vec, fb_value in feedback_embeddings:
-                sim = _cosine_similarity(trend_vec, fb_vec)
-                if sim > 0.6:  # only count meaningful similarity
-                    # Scale: sim=0.6 → 0, sim=1.0 → full weight
-                    strength = (sim - 0.6) / 0.4
-                    semantic_adj += strength * fb_value
-            # Semantic component can contribute up to ±25
-            adjustment += max(-25.0, min(25.0, semantic_adj))
-
-    return max(-50, min(50, int(round(adjustment))))
+    return feedback_adjustment_for_trend_impl(
+        trend,
+        keyword_weights,
+        feedback_embeddings,
+        embed_fn=embed,
+    )
 
 
 def _detect_novel_tactical_patterns(conn, past_topics):
-    """Detect novel tactical patterns by comparing recent extractions against baselines.
-
-    This is the second detector alongside BERTrend: instead of looking for growing
-    topic clusters, it looks for new structured tactical behaviors (role → action → zone)
-    that are semantically distant from what has been seen before.
-
-    Returns list of candidate dicts compatible with the pipeline.
-    """
-    # Fetch recent tactical patterns (last 7 days)
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT tp.id, tp.actor, tp.action, tp.context, tp.zones, tp.phase, "
-            "tp.source_id, s.title AS source_title, s.url AS source_url "
-            "FROM tactical_patterns tp "
-            "JOIN sources s ON tp.source_id = s.id "
-            "WHERE tp.created_at > NOW() - INTERVAL '7 days' "
-            "ORDER BY tp.created_at DESC LIMIT 500"
-        )
-        recent_patterns = cur.fetchall()
-
-    if not recent_patterns:
-        log.info("Tactical patterns: 0 patterns in last 7 days")
-        return []
-
-    log.info("Tactical patterns: %d raw patterns in last 7 days", len(recent_patterns))
-
-    # Group patterns by action type to find recurring tactical behaviors
-    action_groups = {}
-    for row in recent_patterns:
-        pat_id, actor, action, context, zones, phase, src_id, src_title, src_url = row
-        key = f"{actor} {action}"
-        if key not in action_groups:
-            action_groups[key] = {
-                "actor": actor,
-                "action": action,
-                "contexts": [],
-                "source_ids": set(),
-                "source_titles": [],
-                "pattern_ids": [],
-                "zones": set(),
-                "phases": set(),
-            }
-        group = action_groups[key]
-        group["contexts"].append(context[:200] if context else "")
-        group["source_ids"].add(src_id)
-        if src_title and src_title not in group["source_titles"]:
-            group["source_titles"].append(src_title)
-        group["pattern_ids"].append(pat_id)
-        if zones:
-            group["zones"].update(zones)
-        if phase:
-            group["phases"].add(phase)
-
-    # Filter: only patterns with 2+ sources (corroborated, not noise)
-    corroborated = {k: v for k, v in action_groups.items() if len(v["source_ids"]) >= 2}
-    log.info(
-        "Tactical patterns: %d action groups, %d corroborated (2+ sources)",
-        len(action_groups), len(corroborated),
-    )
-    if not corroborated:
-        return []
-
-    # Score novelty for each corroborated pattern
-    descriptions = []
-    groups_list = []
-    for key, group in corroborated.items():
-        desc = f"{group['actor']} {group['action']}"
-        if group["zones"]:
-            desc += f" in {', '.join(list(group['zones'])[:2])}"
-        if group["phases"]:
-            desc += f" during {list(group['phases'])[0]}"
-        descriptions.append(desc)
-        groups_list.append((key, group))
-
-    vectors = embed(descriptions)
-    if not vectors:
-        log.warning("Tactical patterns: embed() returned empty for %d descriptions", len(descriptions))
-        return []
-
-    candidates = []
-    for (key, group), desc, vec in zip(groups_list, descriptions, vectors):
-        novelty = compute_novelty_score(conn, desc, vec, source_count=len(group["source_ids"]))
-
-        # Only promote patterns with meaningful novelty
-        if novelty < 0.3:
-            continue
-
-        # Build candidate compatible with existing pipeline
-        score = int(min(100, novelty * 100))
-        candidates.append({
-            "trend": desc,
-            "reasoning": (
-                f"Novel tactical pattern detected: {group['actor']} performing {group['action']} "
-                f"across {len(group['source_ids'])} sources. "
-                f"Zones: {', '.join(list(group['zones'])[:3]) if group['zones'] else 'unspecified'}. "
-                f"Novelty score: {novelty:.2f}."
-            ),
-            "score": score,
-            "source_titles": group["source_titles"][:5],
-            "sources": [
-                {"source_id": sid, "title": "", "url": ""}
-                for sid in list(group["source_ids"])[:5]
-            ],
-            "novelty_score": novelty,
-            "source_diversity": len(group["source_ids"]),
-            "pattern_ids": group["pattern_ids"],
-            "detection_method": "tactical_pattern",
-        })
-
-    candidates.sort(key=lambda c: -c["novelty_score"])
-    below_threshold = len(corroborated) - len(candidates)
-    log.info(
-        "Tactical patterns: %d candidates above novelty threshold (0.3), %d below",
-        len(candidates), below_threshold,
-    )
-    return candidates[:10]
+    return detect_novel_tactical_patterns_impl(conn, past_topics, embed_fn=embed)
 
 
 def detect_trends(conn) -> tuple[list[dict], bool]:
-    """Detect novel trends using BERTrend + tactical pattern detection + LLM synthesis.
-
-    Two complementary detectors run in sequence:
-      1. BERTrend: clusters article embeddings over time, tracks which clusters grow.
-         Good at detecting "something is being talked about more" (momentum).
-      2. Tactical patterns: extracts structured role→action→zone patterns, scores them
-         against historical baselines. Good at detecting "one team is quietly doing
-         something new" (novelty).
-
-    Results from both detectors are merged and deduplicated. The combined list
-    gives the report pipeline stronger candidates than either detector alone.
-
-    Returns (candidates, had_error) matching the existing pipeline interface.
-    """
-    cfg_path = ROOT / "config.json"
-
-    # Fetch past report titles to avoid repeats
-    with conn.cursor() as cur:
-        cur.execute("SELECT title FROM reports ORDER BY created_at DESC LIMIT 10")
-        past = [r[0] for r in cur.fetchall()]
-
-    all_candidates = []
-
-    # ── Detector 1: BERTrend algorithmic detection ───────────────────────────
-    try:
-        signals = run_bertrend_detection(conn, cfg_path=cfg_path)
-        if signals:
-            log.info("BERTrend detected %d signals (%d weak, %d strong)",
-                     len(signals),
-                     sum(1 for s in signals if s["signal_class"] == "weak"),
-                     sum(1 for s in signals if s["signal_class"] == "strong"))
-
-            # Use LLM to synthesize signals into trend descriptions
-            candidates = describe_signals_with_llm(
-                conn, signals,
-                lambda sys, usr: ask(sys, usr, model=SIGNAL_MODEL),
-                past_topics=past,
-            )
-            if candidates:
-                for c in candidates:
-                    c["detection_method"] = "bertrend"
-                log.info("BERTrend + LLM produced %d trend candidates", len(candidates))
-                all_candidates.extend(candidates)
-        else:
-            log.info("BERTrend found no non-noise signals")
-
-    except Exception as e:
-        log.warning("BERTrend detection failed (%s): %s", type(e).__name__, e, exc_info=True)
-
-    # ── Detector 2: Tactical pattern novelty detection ───────────────────────
-    try:
-        pattern_candidates = _detect_novel_tactical_patterns(conn, past)
-        if pattern_candidates:
-            log.info("Tactical pattern detector found %d novel candidates", len(pattern_candidates))
-            all_candidates.extend(pattern_candidates)
-    except Exception as e:
-        log.warning("Tactical pattern detection failed (%s): %s", type(e).__name__, e, exc_info=True)
-
-    # ── Merge and deduplicate ────────────────────────────────────────────────
-    if all_candidates:
-        # Deduplicate by checking semantic overlap between candidates
-        seen_trends = set()
-        deduped = []
-        for c in sorted(all_candidates, key=lambda x: -x.get("score", 0)):
-            trend_lower = c["trend"].lower().strip()
-            # Simple dedup: skip if a very similar trend text already exists
-            is_dupe = False
-            for seen in seen_trends:
-                # Check word overlap
-                words_new = set(trend_lower.split())
-                words_seen = set(seen.split())
-                if len(words_new & words_seen) / max(1, len(words_new | words_seen)) > 0.6:
-                    is_dupe = True
-                    break
-            if not is_dupe:
-                seen_trends.add(trend_lower)
-                deduped.append(c)
-        all_candidates = deduped
-        log.info("After deduplication: %d unique candidates", len(all_candidates))
-
-    if all_candidates:
-        return all_candidates, False
-
-    # ── Fallback: LLM-only detection (original approach) ─────────────────────
-    log.info("Both detectors returned nothing, falling back to LLM-only detection")
-    return _detect_trends_llm_only(conn, past)
+    return detect_trends_impl(
+        conn,
+        config_path=ROOT / "config.json",
+        run_bertrend_detection_fn=run_bertrend_detection,
+        describe_signals_with_llm_fn=describe_signals_with_llm,
+        ask_fn=ask,
+        signal_model=SIGNAL_MODEL,
+        embed_fn=embed,
+        parse_json_fn=parse_json,
+    )
 
 
 def _detect_trends_llm_only(conn, past) -> tuple[list[dict], bool]:
-    """Original LLM-only trend detection as fallback."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT id, title, url, LEFT(content, 500) FROM sources "
-            "WHERE created_at > NOW() - INTERVAL '7 days' ORDER BY created_at DESC LIMIT 100"
-        )
-        recent = cur.fetchall()
-    if not recent:
-        log.info("LLM-only fallback: 0 sources in last 7 days, nothing to analyze")
-        return [], False
-
-    log.info("LLM-only fallback: %d sources in last 7 days", len(recent))
-
-    source_catalog: dict[str, list[dict]] = {}
-    normalized_catalog: dict[str, list[dict]] = {}
-
-    def _normalize_title(value: str) -> str:
-        return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in value).split())
-
-    summaries = []
-    for source_id, title, url, content in recent:
-        source_title = (title or "Untitled source").strip()
-        normalized_title = _normalize_title(source_title)
-        summaries.append(f"- {source_title}: {content}...")
-        source_catalog.setdefault(source_title, []).append(
-            {
-                "source_id": source_id,
-                "title": source_title,
-                "url": url or "",
-            }
-        )
-        normalized_catalog.setdefault(normalized_title, []).append(
-            {
-                "source_id": source_id,
-                "title": source_title,
-                "url": url or "",
-            }
-        )
-
-    past_block = "\n".join(f"- {t}" for t in past) if past else "(none)"
-
-    prompt_body = "Recent articles and transcripts:\n" + "\n".join(summaries) + "\n\n"
-    log.info(
-        "LLM-only fallback: sending %d sources, prompt ~%d chars, %d past topics excluded",
-        len(recent), len(prompt_body), len(past),
-    )
-
-    try:
-        text = ask(
-            "You are a football tactics analyst spotting novel trends before they go mainstream.",
-            prompt_body +
-            f"Already-covered topics (avoid repeating):\n{past_block}\n\n"
-            "Identify the top 5 most novel tactical or strategic trends being tried by football "
-            "players or teams. Rank them by novelty — things not yet widely adopted get higher scores.\n\n"
-            "Score each trend 0-100 where 100 = extremely novel and underreported, 0 = widely known.\n\n"
-            "For each trend include source_titles as a list of exact titles from the provided source list that most strongly support the trend.\n\n"
-            "Return ONLY valid JSON. No markdown. No code fences. No prose. Use double quotes.\n"
-            'Format: {"candidates": ['
-            '{"trend": "<10-20 word description>", "reasoning": "<why novel>", "score": <0-100>, "source_titles": ["<exact title>"]}'
-            ', ...]}'
-        )
-        log.info("LLM-only trend detection raw response: %r", text)
-        candidates = parse_json(text).get("candidates", [])
-        valid = []
-        for c in candidates:
-            if not (isinstance(c, dict) and c.get("trend") and isinstance(c.get("score"), int)):
-                continue
-
-            matched_sources = []
-            for title in c.get("source_titles") or []:
-                query_title = str(title).strip()
-                query_normalized = _normalize_title(query_title)
-
-                matched_sources.extend(source_catalog.get(query_title, []))
-                matched_sources.extend(normalized_catalog.get(query_normalized, []))
-
-                if query_normalized:
-                    for known_normalized, known_sources in normalized_catalog.items():
-                        if query_normalized in known_normalized or known_normalized in query_normalized:
-                            matched_sources.extend(known_sources)
-
-            deduped = []
-            seen_source_ids = set()
-            for source in matched_sources:
-                if source["source_id"] in seen_source_ids:
-                    continue
-                seen_source_ids.add(source["source_id"])
-                deduped.append(source)
-
-            c["sources"] = deduped
-            valid.append(c)
-
-        log.info(
-            "LLM-only fallback: %d raw candidates from LLM, %d valid after filtering",
-            len(candidates), len(valid),
-        )
-        return valid, False
-    except Exception as e:
-        log.warning("LLM-only trend detection failed: %s", e, exc_info=True)
-        return [], True
+    return detect_trends_llm_only_impl(conn, past, ask_fn=ask, parse_json_fn=parse_json)
 
 # ══════════════════════════════════════════════
 # Step 1: LeadResearcher — decompose with extended thinking + effort scaling
@@ -2451,69 +2003,17 @@ def run_ingest(conn):
 
 
 def run_detect(conn, min_new_sources=0, backfill_days: int | None = None, backfill_limit: int = 200):
-    if min_new_sources > 0:
-        latest_new = load_state(conn, "last_ingest_new_sources")
-        try:
-            latest_new_count = int(latest_new) if latest_new is not None else 0
-        except ValueError:
-            latest_new_count = 0
-        if latest_new_count < min_new_sources:
-            log.info(
-                "Skipping detect: only %d new sources in latest ingest (min required: %d)",
-                latest_new_count,
-                min_new_sources,
-            )
-            return
-
-    lookback_days = backfill_days or _bertrend_lookback_days()
-    recent_embedded_chunks = _count_recent_embedded_chunks(conn, lookback_days)
-    if recent_embedded_chunks == 0:
-        log.warning(
-            "Detect found 0 recent embedded chunks for BERTrend lookback=%dd. Triggering backfill.",
-            lookback_days,
-        )
-        run_backfill(conn, lookback_days=lookback_days, limit=backfill_limit)
-
-    candidates, had_error = detect_trends(conn)
-    if had_error:
-        log.error(
-            "Trend detection run failed due to response-format/parsing error "
-            "(candidates returned: %d)", len(candidates),
-        )
-        raise SystemExit(1)
-    if candidates:
-        keyword_weights = _load_feedback_keyword_weights(conn)
-        feedback_embeddings = _load_feedback_embeddings(conn)
-        if feedback_embeddings:
-            log.info("Loaded %d feedback embeddings for semantic matching", len(feedback_embeddings))
-
-        # ── Novelty scoring for candidates that don't already have it ────────
-        candidates_needing_novelty = [c for c in candidates if "novelty_score" not in c]
-        if candidates_needing_novelty:
-            novelty_texts = [c["trend"] for c in candidates_needing_novelty]
-            novelty_vecs = embed(novelty_texts)
-            if novelty_vecs:
-                for c, vec in zip(candidates_needing_novelty, novelty_vecs):
-                    src_count = len(c.get("sources") or [])
-                    c["novelty_score"] = compute_novelty_score(conn, c["trend"], vec, source_count=src_count)
-                    c["_embedding"] = vec  # stash for baseline update
-
-        with conn.cursor() as cur:
-            stored_scores = []
-            for c in candidates:
-                feedback_adjustment = _feedback_adjustment_for_trend(c["trend"], keyword_weights, feedback_embeddings)
-                trend_candidate_id, final_score, _ = upsert_trend_candidate(conn, c, feedback_adjustment)
-                for source in c.get("sources") or []:
-                    cur.execute(
-                        "INSERT INTO trend_candidate_sources (trend_candidate_id, source_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                        (trend_candidate_id, source["source_id"]),
-                    )
-                stored_scores.append(final_score)
-
-        conn.commit()
-        log.info("Stored %d trend candidates (top final score: %d)", len(candidates), max(stored_scores))
-    else:
-        log.info("No novel trends detected this run")
+    return run_detect_impl(
+        conn,
+        min_new_sources=min_new_sources,
+        backfill_days=backfill_days or _bertrend_lookback_days(),
+        backfill_limit=backfill_limit,
+        load_state_fn=load_state,
+        count_recent_embedded_chunks_fn=_count_recent_embedded_chunks,
+        run_backfill_fn=run_backfill,
+        detect_trends_fn=detect_trends,
+        embed_fn=embed,
+    )
 
 
 def run_report(conn):
@@ -2590,133 +2090,13 @@ def run_report(conn):
 
 
 def run_rescore(conn, *, limit: int = 0, batch_size: int = 100, statuses: list[str] | None = None):
-    query = """
-        SELECT
-            tc.id,
-            tc.trend,
-            tc.score,
-            tc.feedback_adjustment,
-            COALESCE(tc.source_diversity, 0) AS stored_source_diversity,
-            COUNT(tcs.source_id) AS linked_source_count,
-            tc.novelty_score,
-            COALESCE(tc.final_score, tc.score) AS existing_final_score,
-            tc.status
-        FROM trend_candidates tc
-        LEFT JOIN trend_candidate_sources tcs ON tcs.trend_candidate_id = tc.id
-    """
-    params = []
-    if statuses:
-        placeholders = ",".join(["%s"] * len(statuses))
-        query += f" WHERE tc.status IN ({placeholders})"
-        params.extend(statuses)
-    query += """
-        GROUP BY tc.id
-        ORDER BY tc.detected_at DESC, tc.id DESC
-    """
-    if limit and limit > 0:
-        query += " LIMIT %s"
-        params.append(int(limit))
-
-    with conn.cursor() as cur:
-        cur.execute(query, params)
-        rows = cur.fetchall()
-
-    if not rows:
-        log.info("Trend rescore skipped: no trend candidates matched the requested filters")
-        return 0
-
-    batch_size = max(1, int(batch_size or 1))
-    log.info(
-        "Trend rescore starting: %d candidates (statuses=%s, batch_size=%d)",
-        len(rows),
-        ",".join(statuses) if statuses else "all",
-        batch_size,
+    return run_rescore_impl(
+        conn,
+        limit=limit,
+        batch_size=batch_size,
+        statuses=statuses,
+        embed_fn=embed,
     )
-
-    processed = 0
-    changed = 0
-    skipped = 0
-    for start in range(0, len(rows), batch_size):
-        batch = rows[start:start + batch_size]
-        vectors = embed([row[1] for row in batch])
-        if not vectors:
-            log.error("Trend rescore aborted: embedding call failed for batch starting at offset %d", start)
-            raise SystemExit(1)
-
-        updates = []
-        for row, vec in zip(batch, vectors):
-            candidate_id, trend, base_score, feedback_adjustment, stored_source_diversity, linked_source_count, existing_novelty, existing_final_score, status = row
-            if not vec:
-                skipped += 1
-                log.warning("Trend rescore skipped candidate_id=%s because embedding was unavailable", candidate_id)
-                continue
-
-            source_diversity = _effective_source_diversity(stored_source_diversity, linked_source_count)
-            novelty_score = compute_novelty_score(conn, trend, vec, source_count=source_diversity)
-            source_diversity, final_score = _rescored_trend_candidate_values(
-                base_score=base_score,
-                feedback_adjustment=feedback_adjustment,
-                stored_source_diversity=stored_source_diversity,
-                linked_source_count=linked_source_count,
-                novelty_score=novelty_score,
-            )
-            updates.append(
-                (
-                    candidate_id,
-                    novelty_score,
-                    final_score,
-                    source_diversity,
-                    existing_novelty,
-                    int(existing_final_score or base_score),
-                    int(stored_source_diversity or 0),
-                    status,
-                )
-            )
-
-        with conn.cursor() as cur:
-            for candidate_id, novelty_score, final_score, source_diversity, existing_novelty, existing_final_score, stored_source_diversity, status in updates:
-                cur.execute(
-                    """
-                    UPDATE trend_candidates
-                    SET novelty_score = %s,
-                        final_score = %s,
-                        source_diversity = %s
-                    WHERE id = %s
-                    """,
-                    (novelty_score, final_score, source_diversity, candidate_id),
-                )
-                processed += 1
-                if (
-                    existing_novelty is None
-                    or abs(float(existing_novelty) - float(novelty_score)) > 1e-6
-                    or int(existing_final_score) != int(final_score)
-                    or int(stored_source_diversity) != int(source_diversity)
-                ):
-                    changed += 1
-                log.debug(
-                    "Rescored trend_candidate id=%s status=%s final_score=%s novelty=%.4f source_diversity=%s",
-                    candidate_id,
-                    status,
-                    final_score,
-                    novelty_score,
-                    source_diversity,
-                )
-        conn.commit()
-        log.info(
-            "Trend rescore progress: %d/%d processed (%d changed, %d skipped)",
-            min(start + len(batch), len(rows)),
-            len(rows),
-            changed,
-            skipped,
-        )
-
-    log.info(
-        "Trend rescore complete: %d processed, %d changed, %d skipped",
-        processed,
-        changed,
-        skipped,
-    )
-    return processed
 
 
 def main():
