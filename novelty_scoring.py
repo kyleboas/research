@@ -17,10 +17,147 @@ The ideal candidate for early tactical detection:
 
 import logging
 import math
+import re
+from datetime import UTC, datetime
 
 import numpy as np
 
 log = logging.getLogger("research")
+
+_WORD_RE = re.compile(r"[a-z]+(?:-[a-z]+)?")
+_TACTICAL_TERMS = {
+    "back",
+    "backs",
+    "build-up",
+    "counterpress",
+    "counter-press",
+    "cross",
+    "crosses",
+    "corner",
+    "corners",
+    "defender",
+    "defenders",
+    "full-back",
+    "fullbacks",
+    "goal-kick",
+    "goal-kicks",
+    "half-space",
+    "half-spaces",
+    "inverts",
+    "midfield",
+    "midfielder",
+    "midfielders",
+    "overload",
+    "overloads",
+    "press",
+    "pressing",
+    "set-piece",
+    "set-pieces",
+    "striker",
+    "wing-back",
+    "wingbacks",
+    "winger",
+    "wingers",
+    "zone",
+    "zones",
+}
+_GENERIC_TERMS = {
+    "adopting",
+    "analytics",
+    "approach",
+    "development",
+    "direct",
+    "expertise",
+    "focusing",
+    "formation",
+    "improving",
+    "innovation",
+    "leveraging",
+    "management",
+    "method",
+    "methods",
+    "model",
+    "models",
+    "optimizing",
+    "philosophy",
+    "player",
+    "players",
+    "prioritizing",
+    "process",
+    "processes",
+    "recruitment",
+    "strategy",
+    "style",
+    "success",
+    "system",
+    "systems",
+    "talent",
+    "team",
+    "teams",
+    "technology",
+    "using",
+}
+
+
+def _clamp_unit(value):
+    return max(0.0, min(1.0, float(value)))
+
+
+def _weighted_log_average(rows, index):
+    weighted_total = 0.0
+    weight_sum = 0.0
+    for row in rows:
+        similarity = _clamp_unit(row[1])
+        weight = max(0.05, similarity ** 2)
+        weighted_total += math.log1p(max(0, row[index] or 0)) * weight
+        weight_sum += weight
+    if weight_sum <= 0:
+        return 0.0
+    return weighted_total / weight_sum
+
+
+def _recency_penalty(rows):
+    now = datetime.now(UTC)
+    freshest_days = None
+    for row in rows:
+        similarity = _clamp_unit(row[1])
+        last_seen = row[4] if len(row) > 4 else None
+        if similarity < 0.72 or last_seen is None:
+            continue
+        if last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=UTC)
+        age_days = max(0.0, (now - last_seen).total_seconds() / 86400.0)
+        if freshest_days is None or age_days < freshest_days:
+            freshest_days = age_days
+
+    if freshest_days is None:
+        return 0.0
+    if freshest_days <= 7:
+        return 0.18
+    if freshest_days <= 30:
+        return 0.12
+    if freshest_days <= 90:
+        return 0.06
+    return 0.0
+
+
+def _specificity_penalty(trend_text):
+    tokens = _WORD_RE.findall((trend_text or "").lower())
+    if not tokens:
+        return 0.0
+
+    token_set = set(tokens)
+    tactical_hits = sum(1 for token in token_set if token in _TACTICAL_TERMS)
+    generic_hits = sum(1 for token in token_set if token in _GENERIC_TERMS)
+    generic_ratio = generic_hits / max(1, len(token_set))
+
+    if tactical_hits == 0 and generic_hits >= 2 and generic_ratio >= 0.34:
+        return 0.18
+    if tactical_hits <= 1 and generic_hits >= 2 and generic_ratio >= 0.28:
+        return 0.1
+    if len(tokens) <= 4 and tactical_hits == 0:
+        return 0.06
+    return 0.0
 
 
 def compute_novelty_score(conn, trend_text, trend_embedding, source_count=1):
@@ -44,7 +181,7 @@ def compute_novelty_score(conn, trend_text, trend_embedding, source_count=1):
     with conn.cursor() as cur:
         cur.execute(
             "SELECT concept, 1 - (embedding <=> %s::vector) AS similarity, "
-            "occurrence_count, source_count "
+            "occurrence_count, source_count, last_seen "
             "FROM novelty_baselines "
             "ORDER BY embedding <=> %s::vector "
             "LIMIT 5",
@@ -57,14 +194,24 @@ def compute_novelty_score(conn, trend_text, trend_embedding, source_count=1):
         return 0.95
 
     # Semantic novelty: inverse of max similarity to historical concepts
-    max_similarity = max(row[1] for row in nearest)
-    semantic_novelty = 1.0 - max(0.0, min(1.0, max_similarity))
+    max_similarity = max(_clamp_unit(row[1]) for row in nearest)
+    semantic_novelty = 1.0 - max_similarity
 
-    # Check if the closest match has been seen many times (well-established concept)
     closest = nearest[0]
-    closest_occurrences = closest[2] or 1
-    # High occurrence count of closest match → less novel (well-trodden territory)
-    occurrence_penalty = min(0.3, math.log1p(closest_occurrences) * 0.05)
+    closest_occurrences = max(1, closest[2] or 1)
+
+    # Penalize trends that live in a crowded, well-established neighborhood.
+    prevalence_penalty = min(
+        0.35,
+        _weighted_log_average(nearest, 2) * 0.05 + _weighted_log_average(nearest, 3) * 0.035,
+    )
+
+    # If several nearby concepts are already clustered around this idea, treat it
+    # as a mainstream theme rather than a genuinely new concept.
+    avg_similarity = sum(_clamp_unit(row[1]) for row in nearest) / len(nearest)
+    neighborhood_penalty = min(0.16, max(0.0, avg_similarity - 0.55) * 0.35)
+    recency_penalty = _recency_penalty(nearest)
+    specificity_penalty = _specificity_penalty(trend_text)
 
     # Source diversity signal
     # Sweet spot: 2-5 sources = early but supported. 1 source = outlier risk.
@@ -78,15 +225,35 @@ def compute_novelty_score(conn, trend_text, trend_embedding, source_count=1):
     else:
         diversity_bonus = -0.1  # widely covered = not novel
 
-    novelty = max(0.0, min(1.0,
-        semantic_novelty - occurrence_penalty + diversity_bonus
-    ))
+    novelty = max(
+        0.0,
+        min(
+            1.0,
+            semantic_novelty
+            - prevalence_penalty
+            - neighborhood_penalty
+            - recency_penalty
+            - specificity_penalty
+            + diversity_bonus,
+        ),
+    )
 
-    log.info("Novelty score for '%s': %.3f (semantic=%.3f, occ_penalty=%.3f, "
-             "diversity=%.3f, closest='%s' sim=%.3f seen=%d times)",
-             trend_text[:60], novelty, semantic_novelty, occurrence_penalty,
-             diversity_bonus, closest[0][:40] if closest[0] else "?",
-             max_similarity, closest_occurrences)
+    log.info(
+        "Novelty score for '%s': %.3f (semantic=%.3f, prevalence=%.3f, "
+        "neighborhood=%.3f, recency=%.3f, specificity=%.3f, diversity=%.3f, "
+        "closest='%s' sim=%.3f seen=%d times)",
+        trend_text[:60],
+        novelty,
+        semantic_novelty,
+        prevalence_penalty,
+        neighborhood_penalty,
+        recency_penalty,
+        specificity_penalty,
+        diversity_bonus,
+        closest[0][:40] if closest[0] else "?",
+        max_similarity,
+        closest_occurrences,
+    )
 
     return round(novelty, 4)
 
