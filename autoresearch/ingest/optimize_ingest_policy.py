@@ -257,6 +257,22 @@ def ensure_ingest_policy_runs_table(conn):
             ADD COLUMN IF NOT EXISTS n_trials INTEGER NOT NULL DEFAULT 0
             """
         )
+    if hasattr(conn, "commit"):
+        conn.commit()
+
+
+def get_ingest_policy_runs_columns(conn) -> set[str]:
+    """Return the currently available columns for ingest_policy_runs."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'ingest_policy_runs'
+            """
+        )
+        return {str(row[0]) for row in cur.fetchall()}
 
 
 def save_pipeline_state(conn, key: str, value: str):
@@ -290,37 +306,38 @@ def record_run(
     """Record optimization run to database."""
     ensure_ingest_policy_runs_table(conn)
     delta = float(best_score) - float(baseline_score)
-    
+
+    payload = {
+        "baseline_score": float(baseline_score),
+        "best_score": float(best_score),
+        "delta": delta,
+        "min_improvement": float(min_improvement),
+        "applied": bool(applied),
+        "apply_decision": apply_decision_value,
+        "optimization_type": optimization_type,
+        "n_trials": int(n_trials),
+        "observations": json.dumps(observations, sort_keys=True),
+        "baseline_policy": json.dumps(baseline_policy, sort_keys=True),
+        "best_policy": json.dumps(best_policy, sort_keys=True),
+    }
+    jsonb_columns = {"observations", "baseline_policy", "best_policy"}
+    available_columns = get_ingest_policy_runs_columns(conn)
+    insert_columns = [column for column in payload if column in available_columns]
+    if not insert_columns:
+        raise RuntimeError("ingest_policy_runs has no writable columns")
+    placeholders = [
+        "%s::jsonb" if column in jsonb_columns else "%s"
+        for column in insert_columns
+    ]
+    insert_sql = "INSERT INTO ingest_policy_runs ({}) VALUES ({})".format(
+        ", ".join(insert_columns),
+        ", ".join(placeholders),
+    )
+
     with conn.cursor() as cur:
         cur.execute(
-            """
-            INSERT INTO ingest_policy_runs (
-                baseline_score,
-                best_score,
-                delta,
-                min_improvement,
-                applied,
-                apply_decision,
-                optimization_type,
-                n_trials,
-                observations,
-                baseline_policy,
-                best_policy
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb)
-            """,
-            (
-                float(baseline_score),
-                float(best_score),
-                delta,
-                float(min_improvement),
-                bool(applied),
-                apply_decision_value,
-                optimization_type,
-                int(n_trials),
-                json.dumps(observations, sort_keys=True),
-                json.dumps(baseline_policy, sort_keys=True),
-                json.dumps(best_policy, sort_keys=True),
-            ),
+            insert_sql,
+            tuple(payload[column] for column in insert_columns),
         )
     
     save_pipeline_state(conn, "last_ingest_policy_baseline", f"{float(baseline_score):.2f}")
