@@ -771,6 +771,7 @@
         rescore: "rescore historical trends",
         report: "report",
         report_policy_eval: "report quality eval",
+        report_policy_benchmark: "report policy benchmark",
         detect_policy_eval: "detect policy eval",
         detect_policy_optimize: "detect policy optimize",
       };
@@ -799,7 +800,7 @@
           { key: "report", label: "Next report" },
         ];
 
-        const runEntries = ["ingest", "detect", "rescore", "report", "report_policy_eval", "detect_policy_eval", "detect_policy_optimize"].map((name) => ({
+        const runEntries = ["ingest", "detect", "rescore", "report", "report_policy_eval", "report_policy_benchmark", "detect_policy_eval", "detect_policy_optimize"].map((name) => ({
           name,
           data: stepRuns?.[name] || { status: "idle" },
         }));
@@ -822,9 +823,9 @@
           .join("")}${runtimeCards}
           <section class="status-card">
             <p class="status-label">Manual runs</p>
-            <p class="status-subvalue">Run ingest, detect, rescore past trends, report, a report-quality eval, a local detect-policy test, or an auto-tuning pass from the dashboard.</p>
+            <p class="status-subvalue">Run ingest, detect, rescore past trends, report, a report-quality eval, a report-policy benchmark, a local detect-policy test, or an auto-tuning pass from the dashboard.</p>
             <div class="run-controls">
-              ${["ingest", "detect", "rescore", "report", "report_policy_eval", "detect_policy_eval", "detect_policy_optimize"].map((step) => `<button class="run-step-btn" data-run-step="${step}" ${isAnyRunning ? "disabled" : ""}>${step === "report_policy_eval" ? "Test report quality" : step === "detect_policy_eval" ? "Test detect policy" : step === "detect_policy_optimize" ? "Tune detect policy" : step === "rescore" ? "Rescore past trends" : `Run ${step}`}</button>`).join("")}
+              ${["ingest", "detect", "rescore", "report", "report_policy_eval", "report_policy_benchmark", "detect_policy_eval", "detect_policy_optimize"].map((step) => `<button class="run-step-btn" data-run-step="${step}" ${isAnyRunning ? "disabled" : ""}>${step === "report_policy_eval" ? "Test report quality" : step === "report_policy_benchmark" ? "Benchmark report policy" : step === "detect_policy_eval" ? "Test detect policy" : step === "detect_policy_optimize" ? "Tune detect policy" : step === "rescore" ? "Rescore past trends" : `Run ${step}`}</button>`).join("")}
             </div>
             ${runEntries.map((entry) => `
               <div class="step-run-block">

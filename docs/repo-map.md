@@ -70,7 +70,7 @@ If that area is refactored later, do it as a separate boundary change. Do not mi
 - `tests/test_detect_evaluator.py`: detect eval metrics behavior.
 
 Offline eval tooling lives in `autoresearch_detect/`.
-Report-quality eval tooling lives in `autoresearch_report/`.
+Report-quality eval and benchmark tooling lives in `autoresearch_report/`.
 
 ## Common Change Paths
 

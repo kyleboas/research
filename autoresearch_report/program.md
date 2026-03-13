@@ -55,6 +55,7 @@ Or do both in one command:
 
 ## Next step
 
-Add a benchmark runner that regenerates a small fixed set of reports under
-different `report_policy_config.json` settings, then uses this evaluator to
-compare outcomes.
+Use the benchmark runner to regenerate a small fixed set of reports under a
+small number of deliberate candidate `report_policy_config.json` settings,
+then compare outcomes with this evaluator. Keep the candidate set small enough
+to be reasonable on Railway.

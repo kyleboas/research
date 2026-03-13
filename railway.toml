@@ -34,6 +34,7 @@ builder = "nixpacks"
 #
 # Optional manual/cron quality jobs you can also run from this same repo:
 #   - report quality eval: python autoresearch_report/eval_report.py --refresh-auto
+#   - report policy benchmark: python autoresearch_report/benchmark_report.py --refresh-auto --limit 3
 #   - detect policy eval:  python autoresearch_detect/eval_detect.py
 #   - detect policy tune:  python autoresearch_detect/optimize_detect_policy.py --refresh-auto --apply
 #

@@ -277,6 +277,7 @@ Harness files:
 - `autoresearch_report/eval_report.py`
 - `autoresearch_report/evaluator.py`
 - `autoresearch_report/export_reports_snapshot.py`
+- `autoresearch_report/benchmark_report.py`
 
 Run the evaluator on the starter fixture:
 
@@ -287,6 +288,13 @@ Run the report-quality evaluator against recent reports from Postgres:
 
 ```bash
 .venv/bin/python autoresearch_report/eval_report.py --refresh-auto
+```
+
+Benchmark a small fixed set of recent report topics under candidate report
+policies and compare the generated output scores:
+
+```bash
+.venv/bin/python autoresearch_report/benchmark_report.py --refresh-auto --limit 3
 ```
 ```
 

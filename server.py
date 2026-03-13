@@ -32,6 +32,13 @@ RUN_COMMANDS = {
         str(ROOT / "autoresearch_report" / "eval_report.py"),
         "--refresh-auto",
     ],
+    "report_policy_benchmark": [
+        sys.executable,
+        str(ROOT / "autoresearch_report" / "benchmark_report.py"),
+        "--refresh-auto",
+        "--limit",
+        "3",
+    ],
     "detect_policy_eval": [sys.executable, str(ROOT / "autoresearch_detect" / "eval_detect.py")],
     "detect_policy_optimize": [
         sys.executable,
@@ -47,6 +54,7 @@ _step_runs = {
     "rescore": {"status": "idle", "started_at": None, "finished_at": None, "exit_code": None, "log_tail": ""},
     "report": {"status": "idle", "started_at": None, "finished_at": None, "exit_code": None, "log_tail": ""},
     "report_policy_eval": {"status": "idle", "started_at": None, "finished_at": None, "exit_code": None, "log_tail": ""},
+    "report_policy_benchmark": {"status": "idle", "started_at": None, "finished_at": None, "exit_code": None, "log_tail": ""},
     "detect_policy_eval": {"status": "idle", "started_at": None, "finished_at": None, "exit_code": None, "log_tail": ""},
     "detect_policy_optimize": {"status": "idle", "started_at": None, "finished_at": None, "exit_code": None, "log_tail": ""},
 }
@@ -190,6 +198,45 @@ def _format_report_eval_notification(summary):
     return "\n".join(lines)
 
 
+def _parse_report_benchmark_summary(log_text):
+    text = str(log_text or "")
+    result = {}
+    patterns = {
+        "fixture": r"fixture=(.+)",
+        "policy_path": r"policy_path=(.+)",
+        "baseline": r"baseline=(-?\d+\.\d+)",
+        "best": r"best=(-?\d+\.\d+)",
+        "delta": r"delta=(-?\d+\.\d+)",
+        "best_policy": r"best_policy=(\{.+\})",
+    }
+    for key, pattern in patterns.items():
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        if key == "best_policy":
+            try:
+                result[key] = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                result[key] = match.group(1).strip()
+        elif key in {"fixture", "policy_path"}:
+            result[key] = match.group(1).strip()
+        else:
+            result[key] = float(match.group(1))
+    return result
+
+
+def _format_report_benchmark_notification(summary, *, policy_changed: bool):
+    if not summary:
+        return f"Report policy benchmark finished.\n• Policy changed: {'yes' if policy_changed else 'no'}"
+    lines = ["Report policy benchmark finished."]
+    if summary.get("baseline") is not None and summary.get("best") is not None:
+        lines.append(f"• Score: {summary['baseline']:.2f} -> {summary['best']:.2f}")
+    if summary.get("delta") is not None:
+        lines.append(f"• Delta: {summary['delta']:+.2f}")
+    lines.append(f"• Policy changed: {'yes' if policy_changed else 'no'}")
+    return "\n".join(lines)
+
+
 def _parse_optimize_summary(log_text):
     text = str(log_text or "")
     result = {}
@@ -232,6 +279,14 @@ def _format_optimize_notification(summary, *, policy_changed: bool):
 
 def _load_policy_text():
     policy_path = ROOT / "detect_policy_config.json"
+    try:
+        return policy_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+
+
+def _load_report_policy_text():
+    policy_path = ROOT / "report_policy_config.json"
     try:
         return policy_path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -294,6 +349,13 @@ def _notify_step_completion(step, run_meta, state):
         message = _format_detect_candidates_notification(candidates)
     elif step == "report_policy_eval":
         message = _format_report_eval_notification(_parse_report_eval_summary(_read_log_text(run_meta.get("log_path"))))
+    elif step == "report_policy_benchmark":
+        before_policy = run_meta.get("report_policy_before", "")
+        after_policy = _load_report_policy_text()
+        message = _format_report_benchmark_notification(
+            _parse_report_benchmark_summary(_read_log_text(run_meta.get("log_path"))),
+            policy_changed=before_policy != after_policy,
+        )
     elif step == "detect_policy_eval":
         message = _format_eval_notification(_parse_eval_summary(_read_log_text(run_meta.get("log_path"))))
     elif step == "detect_policy_optimize":
@@ -381,6 +443,8 @@ def _start_step_run(step):
         run_meta = {"log_file": log_file, "log_path": log_file.name}
         if step == "detect":
             run_meta["baseline"] = _load_detect_baseline()
+        elif step == "report_policy_benchmark":
+            run_meta["report_policy_before"] = _load_report_policy_text()
         elif step == "detect_policy_optimize":
             run_meta["policy_before"] = _load_policy_text()
         proc = subprocess.Popen(

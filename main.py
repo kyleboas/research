@@ -73,6 +73,14 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 _cfg_path = ROOT / "config.json"
 _CFG: dict = json.loads(_cfg_path.read_text()) if _cfg_path.exists() else {}
 REPORT_POLICY = load_report_policy()
+MAX_RESEARCH_ROUNDS = int(REPORT_POLICY["max_research_rounds"])
+
+
+def set_report_policy(overrides: dict | None = None) -> dict:
+    global REPORT_POLICY, MAX_RESEARCH_ROUNDS
+    REPORT_POLICY = load_report_policy(overrides)
+    MAX_RESEARCH_ROUNDS = int(REPORT_POLICY["max_research_rounds"])
+    return REPORT_POLICY
 
 LEAD_MODEL    = os.environ.get("LEAD_MODEL")    or _CFG.get("lead_model",    "anthropic/claude-sonnet-4-6")
 MODEL         = os.environ.get("MODEL")         or _CFG.get("model",         "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast")
@@ -2548,9 +2556,14 @@ def revise(trend, draft, citation_report, chunk_json, run_dir: Path):
 # Orchestration: full multi-agent pipeline with re-planning
 # ══════════════════════════════════════════════
 
-MAX_RESEARCH_ROUNDS = int(REPORT_POLICY["max_research_rounds"])
-
-def generate_report(conn, trend):
+def generate_report(
+    conn,
+    trend,
+    *,
+    persist_report: bool = True,
+    publish_to_github: bool = True,
+    write_local_post: bool = True,
+):
     """Full pipeline matching Anthropic's multi-agent research architecture.
 
     LeadResearcher (extended thinking, effort scaling)
@@ -2621,7 +2634,8 @@ def generate_report(conn, trend):
         category=report_category,
     )
     local_post_path = ROOT / github_post_path
-    _write_text(local_post_path, github_post_content)
+    if write_local_post:
+        _write_text(local_post_path, github_post_content)
 
     report_summary = _report_summary(final_report)
     github_url = ""
@@ -2630,7 +2644,7 @@ def generate_report(conn, trend):
     github_base_branch = GITHUB_BRANCH
     github_publish_error = ""
     discord_notify_error = ""
-    if GITHUB_TOKEN and GITHUB_REPO:
+    if publish_to_github and GITHUB_TOKEN and GITHUB_REPO:
         try:
             publish_result = _publish_report_post_to_github(
                 github_post_path,
@@ -2649,6 +2663,8 @@ def generate_report(conn, trend):
             github_publish_error = str(exc)
             log.error("GitHub report publish failed for %s: %s", github_post_path, exc, exc_info=True)
             raise
+    elif not publish_to_github:
+        github_publish_error = "github_publish_disabled"
     else:
         github_publish_error = "github_not_configured"
         log.warning(
@@ -2656,7 +2672,7 @@ def generate_report(conn, trend):
             github_post_path,
         )
 
-    metadata = json.dumps({
+    metadata_obj = {
         "complexity": complexity,
         "angles": [r["angle"] for r in all_subagent_results],
         "total_chunks": len(all_chunks),
@@ -2682,16 +2698,19 @@ def generate_report(conn, trend):
             "signal": SIGNAL_MODEL,
         },
         "report_policy": REPORT_POLICY,
-    })
-    with conn.cursor() as cur:
-        cur.execute("INSERT INTO reports (title, content, metadata) VALUES (%s, %s, %s::jsonb)",
-                    (trend, final_report, metadata))
-        conn.commit()
+    }
+    if persist_report:
+        metadata = json.dumps(metadata_obj)
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO reports (title, content, metadata) VALUES (%s, %s, %s::jsonb)",
+                        (trend, final_report, metadata))
+            conn.commit()
 
     log.info(
-        "Report saved: %s github=%s (%d chunks, %d angles, %d rounds)",
-        local_post_path,
+        "Report generated: %s github=%s persist=%s (%d chunks, %d angles, %d rounds)",
+        local_post_path if write_local_post else "(local write skipped)",
         github_url or "not_published",
+        persist_report,
         len(all_chunks),
         len(all_subagent_results),
         research_round + 1,
