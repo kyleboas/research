@@ -81,11 +81,19 @@ CREATE TABLE IF NOT EXISTS ingest_policy_runs (
     min_improvement DOUBLE PRECISION NOT NULL DEFAULT 0,
     applied BOOLEAN NOT NULL DEFAULT FALSE,
     apply_decision TEXT NOT NULL DEFAULT '',
+    optimization_type TEXT NOT NULL DEFAULT 'bayesian',
+    n_trials INTEGER NOT NULL DEFAULT 0,
     observations JSONB NOT NULL DEFAULT '{}'::jsonb,
     baseline_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
     best_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE ingest_policy_runs
+    ADD COLUMN IF NOT EXISTS optimization_type TEXT NOT NULL DEFAULT 'bayesian';
+
+ALTER TABLE ingest_policy_runs
+    ADD COLUMN IF NOT EXISTS n_trials INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS pipeline_state (
     key TEXT PRIMARY KEY,

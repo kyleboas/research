@@ -245,6 +245,18 @@ def ensure_ingest_policy_runs_table(conn):
             ON ingest_policy_runs (created_at DESC)
             """
         )
+        cur.execute(
+            """
+            ALTER TABLE ingest_policy_runs
+            ADD COLUMN IF NOT EXISTS optimization_type TEXT NOT NULL DEFAULT 'bayesian'
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE ingest_policy_runs
+            ADD COLUMN IF NOT EXISTS n_trials INTEGER NOT NULL DEFAULT 0
+            """
+        )
 
 
 def save_pipeline_state(conn, key: str, value: str):
