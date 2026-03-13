@@ -15,6 +15,8 @@ DEFAULT_POLICY = {
     "subagent_max_tokens": 7000,
     "synthesis_max_tokens": 16000,
     "revision_max_tokens": 16000,
+    "optimize_topic_limit": 2,
+    "max_report_llm_cost_usd": 1.0,
 }
 
 _POLICY_ENV_VAR = "REPORT_POLICY_PATH"

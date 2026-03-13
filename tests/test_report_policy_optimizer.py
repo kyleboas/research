@@ -1,7 +1,9 @@
 import unittest
 
 from autoresearch_report.benchmark_report import (
+    estimate_report_llm_cost,
     policy_changed,
+    quality_per_dollar,
     report_policy_apply_decision,
 )
 
@@ -46,6 +48,31 @@ class ReportPolicyOptimizerTests(unittest.TestCase):
 
         self.assertTrue(applied)
         self.assertEqual(reason, "applied")
+
+    def test_estimated_cost_increases_with_larger_policy(self):
+        smaller = estimate_report_llm_cost(
+            {
+                "moderate_min_tasks": 2,
+                "max_research_rounds": 2,
+                "subagent_max_tokens": 4000,
+                "synthesis_max_tokens": 10000,
+                "revision_max_tokens": 10000,
+            }
+        )
+        larger = estimate_report_llm_cost(
+            {
+                "moderate_min_tasks": 4,
+                "max_research_rounds": 3,
+                "subagent_max_tokens": 7000,
+                "synthesis_max_tokens": 16000,
+                "revision_max_tokens": 16000,
+            }
+        )
+
+        self.assertGreater(larger, smaller)
+
+    def test_quality_per_dollar_prefers_cheaper_equal_quality(self):
+        self.assertGreater(quality_per_dollar(80, 1.0), quality_per_dollar(80, 2.0))
 
 
 if __name__ == "__main__":

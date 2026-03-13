@@ -302,7 +302,7 @@ policies and compare the generated output scores:
 Search for the best report policy on recent topics and apply it to the live pipeline:
 
 ```bash
-.venv/bin/python autoresearch_report/optimize_report_policy.py --refresh-auto --limit 3
+.venv/bin/python autoresearch_report/optimize_report_policy.py --refresh-auto --limit 2
 ```
 
 The report optimizer now has a built-in safety rule: it only applies a new
@@ -310,6 +310,11 @@ policy when the best candidate beats the baseline by at least the configured
 minimum improvement. Each run is also persisted to Postgres in
 `report_policy_runs`, and summary fields are mirrored into `pipeline_state` for
 dashboard/debug visibility.
+
+It is also cost-aware: report policy config now includes a per-report LLM budget
+target (`max_report_llm_cost_usd`), and the optimizer prefers the best-scoring
+candidate that fits inside that budget. If no candidate fits, it falls back to
+the best quality-per-dollar option and records that decision explicitly.
 
 Export a real candidate snapshot for manual labeling:
 

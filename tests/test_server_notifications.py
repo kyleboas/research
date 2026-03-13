@@ -143,6 +143,10 @@ class ServerNotificationTests(unittest.TestCase):
                     "baseline=78.25",
                     "best=82.50",
                     "delta=4.25",
+                    "estimated_cost_per_report=0.85",
+                    "quality_per_dollar=97.0588",
+                    "max_report_llm_cost_usd=1.00",
+                    "budget_status=within_budget",
                     "min_improvement=1.00",
                     "policy_changed=yes",
                     "apply_decision=applied",
@@ -157,6 +161,10 @@ class ServerNotificationTests(unittest.TestCase):
         self.assertEqual(summary["baseline"], 78.25)
         self.assertEqual(summary["best"], 82.5)
         self.assertEqual(summary["delta"], 4.25)
+        self.assertEqual(summary["estimated_cost_per_report"], 0.85)
+        self.assertEqual(summary["quality_per_dollar"], 97.0588)
+        self.assertEqual(summary["max_report_llm_cost_usd"], 1.0)
+        self.assertEqual(summary["budget_status"], "within_budget")
         self.assertEqual(summary["min_improvement"], 1.0)
         self.assertTrue(summary["policy_changed"])
         self.assertEqual(summary["apply_decision"], "applied")
@@ -176,13 +184,25 @@ class ServerNotificationTests(unittest.TestCase):
 
     def test_format_report_optimize_notification_reports_policy_change(self):
         message = _format_report_optimize_notification(
-            {"baseline": 78.25, "best": 82.5, "delta": 4.25, "min_improvement": 1.0, "apply_decision": "applied"},
+            {
+                "baseline": 78.25,
+                "best": 82.5,
+                "delta": 4.25,
+                "estimated_cost_per_report": 0.85,
+                "max_report_llm_cost_usd": 1.0,
+                "budget_status": "within_budget",
+                "min_improvement": 1.0,
+                "apply_decision": "applied",
+            },
             policy_changed=True,
         )
 
         self.assertIn("Report policy optimize finished.", message)
         self.assertIn("Score: 78.25 -> 82.50", message)
         self.assertIn("Delta: +4.25", message)
+        self.assertIn("Est. cost/report: $0.85", message)
+        self.assertIn("Budget/report: $1.00", message)
+        self.assertIn("Budget status: within_budget", message)
         self.assertIn("Min improvement: 1.00", message)
         self.assertIn("Policy changed: yes", message)
         self.assertIn("Apply decision: applied", message)

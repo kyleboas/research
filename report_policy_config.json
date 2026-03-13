@@ -8,5 +8,7 @@
   "subagent_search_limit": 24,
   "subagent_max_tokens": 7000,
   "synthesis_max_tokens": 16000,
-  "revision_max_tokens": 16000
+  "revision_max_tokens": 16000,
+  "optimize_topic_limit": 2,
+  "max_report_llm_cost_usd": 1.0
 }

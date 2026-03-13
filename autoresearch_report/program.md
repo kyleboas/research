@@ -71,4 +71,11 @@ Every benchmark/optimize run is also stored in Postgres (`report_policy_runs`)
 so the tuning loop has a persistent history instead of relying only on logs or
 TSV artifacts.
 
+The optimizer is now budget-aware as well:
+
+- `report_policy_config.json` includes `max_report_llm_cost_usd`
+- candidate policies get an estimated per-report LLM cost
+- the loop prefers the highest-quality candidate that stays within budget
+- if none fit, it falls back to the best quality-per-dollar candidate
+
 Keep the benchmark topic count small enough to remain reasonable on Railway.

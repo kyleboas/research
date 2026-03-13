@@ -216,6 +216,10 @@ def _parse_report_benchmark_summary(log_text):
         "baseline": r"baseline=(-?\d+\.\d+)",
         "best": r"best=(-?\d+\.\d+)",
         "delta": r"delta=(-?\d+\.\d+)",
+        "estimated_cost_per_report": r"estimated_cost_per_report=(-?\d+\.\d+)",
+        "quality_per_dollar": r"quality_per_dollar=(-?\d+\.\d+)",
+        "max_report_llm_cost_usd": r"max_report_llm_cost_usd=(-?\d+\.\d+)",
+        "budget_status": r"budget_status=([a-z_]+)",
         "min_improvement": r"min_improvement=(-?\d+\.\d+)",
         "policy_changed": r"policy_changed=(yes|no)",
         "apply_decision": r"apply_decision=([a-z_]+)",
@@ -233,7 +237,7 @@ def _parse_report_benchmark_summary(log_text):
                 result[key] = match.group(1).strip()
         elif key == "policy_changed":
             result[key] = match.group(1).strip() == "yes"
-        elif key in {"fixture", "policy_path", "apply_decision", "applied_policy"}:
+        elif key in {"fixture", "policy_path", "apply_decision", "applied_policy", "budget_status"}:
             result[key] = match.group(1).strip()
         else:
             result[key] = float(match.group(1))
@@ -260,6 +264,12 @@ def _format_report_optimize_notification(summary, *, policy_changed: bool):
         lines.append(f"• Score: {summary['baseline']:.2f} -> {summary['best']:.2f}")
     if summary.get("delta") is not None:
         lines.append(f"• Delta: {summary['delta']:+.2f}")
+    if summary.get("estimated_cost_per_report") is not None:
+        lines.append(f"• Est. cost/report: ${summary['estimated_cost_per_report']:.2f}")
+    if summary.get("max_report_llm_cost_usd") is not None:
+        lines.append(f"• Budget/report: ${summary['max_report_llm_cost_usd']:.2f}")
+    if summary.get("budget_status"):
+        lines.append(f"• Budget status: {summary['budget_status']}")
     if summary.get("min_improvement") is not None:
         lines.append(f"• Min improvement: {summary['min_improvement']:.2f}")
     lines.append(f"• Policy changed: {'yes' if policy_changed else 'no'}")
