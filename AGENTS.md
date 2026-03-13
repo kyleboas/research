@@ -28,6 +28,80 @@ If `.venv/bin/python` exists, the Makefile uses it automatically.
 - Detect eval: `python autoresearch/detect/eval_detect.py`
 - Detect optimizer: `python autoresearch/detect/optimize_detect_policy.py`
 
+## Bayesian Optimization Framework
+
+The autoresearch pipeline now uses intelligent Bayesian optimization instead of brute-force grid search. This provides significant efficiency gains while respecting the $5 Railway budget constraint.
+
+### Core Module
+
+`autoresearch/bayesian_optimizer.py` - Generic Bayesian optimization using Optuna with:
+- **Early stopping**: Pruner terminates unpromising trials early (MedianPruner)
+- **Warm-start**: Resume from previous optimization results
+- **Parameter importance**: Shows which parameters most affect performance
+- **Budget-aware**: Penalizes configurations that exceed cost limits
+
+### Policy Optimizers
+
+All three optimizers use Bayesian search by default:
+
+**Detect Policy** (`autoresearch/detect/optimize_detect_policy.py`):
+```bash
+# Fast optimization (30 trials)
+python autoresearch/detect/optimize_detect_policy.py --preset fast
+
+# Thorough search (200 trials)
+python autoresearch/detect/optimize_detect_policy.py --preset thorough
+
+# With warm-start from previous results
+python autoresearch/detect/optimize_detect_policy.py --warm-start
+```
+Replaces 12,800+ exhaustive grid combinations with intelligent sampling.
+
+**Report Policy** (`autoresearch/report/optimize_report_policy.py`):
+```bash
+# Fast optimization (default, Railway-safe)
+python autoresearch/report/optimize_report_policy.py
+
+# Budget-constrained optimization
+python autoresearch/report/optimize_report_policy.py --preset budget_constrained
+
+# Use recent reports for simulation
+python autoresearch/report/optimize_report_policy.py --limit 3 --refresh-auto
+```
+Replaces 4 hand-crafted policies with systematic policy space exploration.
+
+**Ingest Policy** (`autoresearch/ingest/optimize_ingest_policy.py`):
+```bash
+# Analyze last 30 days of ingestion data
+python autoresearch/ingest/optimize_ingest_policy.py --lookback-days 30
+```
+Optimizes overlap windows and detection thresholds based on historical lag patterns.
+
+### Optimization Presets
+
+- `fast` (30 trials, 5 minute timeout): Default Railway-safe setting for hourly runs
+- `thorough` (200 trials): Comprehensive search for production
+- `budget_constrained` (50 trials): Prioritizes cost-efficient configurations
+- `exploration` (100 trials, no early stopping): Maximum parameter space coverage
+- Runtime guardrails: single-threaded BLAS, post-trial GC, SQLite cache size limit, and a soft RSS stop condition
+
+### Legacy Mode
+
+For backward compatibility, all optimizers support the original implementations:
+```bash
+python autoresearch/detect/optimize_detect_policy.py --legacy
+python autoresearch/report/optimize_report_policy.py --legacy
+python autoresearch/ingest/optimize_ingest_policy.py --legacy
+```
+
+### Features
+
+- **No LLM re-runs**: detect/ingest use policy evaluation only; report uses no-LLM simulations
+- **Early stopping**: Trials pruned if intermediate results are unpromising
+- **Warm-start**: Loads previous results to accelerate convergence
+- **Study persistence**: SQLite storage allows resuming interrupted optimizations
+- **Parameter importance**: Identifies which knobs matter most
+
 ## Where To Edit
 
 For ingest changes:
