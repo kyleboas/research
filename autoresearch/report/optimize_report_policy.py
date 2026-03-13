@@ -26,6 +26,8 @@ if str(REPO_ROOT) not in sys.path:
 from autoresearch.bayesian_optimizer import (
     BayesianOptimizer,
     OPTIMIZATION_PRESETS,
+    OPTUNA_AVAILABLE,
+    OPTUNA_IMPORT_ERROR,
     clone_optimization_config,
 )
 from autoresearch.report.evaluator import evaluate_items, load_fixture
@@ -240,6 +242,28 @@ def load_previous_results(results_path: Path) -> list[dict]:
         return []
 
 
+def run_legacy_optimizer(args, reason: str):
+    from autoresearch.report.optimize_report_policy_legacy import main as legacy_main
+
+    legacy_argv = [sys.argv[0], "--fixture", str(args.fixture), "--limit", str(args.limit)]
+    if args.refresh_auto:
+        legacy_argv.append("--refresh-auto")
+    if args.apply:
+        legacy_argv.append("--apply")
+    if args.min_improvement != DEFAULT_MIN_IMPROVEMENT:
+        legacy_argv.extend(["--min-improvement", str(args.min_improvement)])
+
+    print(f"bayesian_unavailable={reason}")
+    print("falling_back_to=legacy_report_optimizer")
+
+    original_argv = sys.argv[:]
+    try:
+        sys.argv = legacy_argv
+        legacy_main()
+    finally:
+        sys.argv = original_argv
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Bayesian optimization for report policy using no-LLM simulations"
@@ -262,10 +286,12 @@ def main():
     parser.add_argument("--legacy", action="store_true", help="Use legacy hand-crafted policies")
     args = parser.parse_args()
 
-    # Handle legacy mode
     if args.legacy:
-        from autoresearch.report.optimize_report_policy_legacy import main as legacy_main
-        legacy_main()
+        run_legacy_optimizer(args, "explicit_legacy")
+        return
+
+    if not OPTUNA_AVAILABLE:
+        run_legacy_optimizer(args, str(OPTUNA_IMPORT_ERROR or "optuna_import_failed"))
         return
 
     fixture_path = Path(args.fixture)
@@ -303,9 +329,12 @@ def main():
     print(f"Budget limit: ${budget_limit:.2f}")
     print(f"Search space: {len(SEARCH_SPACE_BAYESIAN)} parameters")
     
-    # Create optimizer
-    optimizer = BayesianOptimizer(config)
-    optimizer.create_study(direction="maximize")
+    try:
+        optimizer = BayesianOptimizer(config)
+        optimizer.create_study(direction="maximize")
+    except ImportError as exc:
+        run_legacy_optimizer(args, str(exc))
+        return
     
     # Warm-start
     if args.warm_start:
@@ -320,10 +349,9 @@ def main():
     # Run optimization
     try:
         result = optimizer.optimize(objective, SEARCH_SPACE_BAYESIAN)
-    except ImportError as e:
-        print(f"Error: {e}")
-        print("Please install optuna: pip install optuna")
-        raise SystemExit(1)
+    except ImportError as exc:
+        run_legacy_optimizer(args, str(exc))
+        return
     
     # Build best policy
     best_params = result["best_params"]

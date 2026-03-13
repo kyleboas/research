@@ -9,6 +9,7 @@ import tempfile
 import json
 from pathlib import Path
 import sys
+from unittest import mock
 
 # Add repo root to path
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +63,17 @@ class TestIngestPolicyOptimizer(unittest.TestCase):
         self.assertIsInstance(SEARCH_SPACE_BAYESIAN, dict)
         self.assertIn("rss_overlap_seconds", SEARCH_SPACE_BAYESIAN)
         self.assertIn("detect_min_new_sources", SEARCH_SPACE_BAYESIAN)
+
+    def test_falls_back_to_legacy_when_bayesian_unavailable(self):
+        from autoresearch.ingest import optimize_ingest_policy
+
+        with mock.patch.object(optimize_ingest_policy, "OPTUNA_AVAILABLE", False), \
+             mock.patch.object(optimize_ingest_policy, "OPTUNA_IMPORT_ERROR", ImportError("broken optuna")), \
+             mock.patch.object(optimize_ingest_policy, "run_legacy_optimizer") as legacy_runner, \
+             mock.patch.object(sys, "argv", ["optimize_ingest_policy.py"]):
+            optimize_ingest_policy.main()
+
+        legacy_runner.assert_called_once()
 
 
 class TestLegacyBackwardsCompatibility(unittest.TestCase):
