@@ -25,7 +25,6 @@ builder = "nixpacks"
 # Set these variables in Railway's Variables tab for all three services:
 #
 #   DATABASE_URL              ${{pgvector.DATABASE_URL}}   ← Railway reference variable
-#   TRANSCRIPT_API_KEY        your-transcript-api-key
 #   CLOUDFLARE_GATEWAY_URL    https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_name}/openai
 #   CLOUDFLARE_GATEWAY_TOKEN  your-cloudflare-ai-gateway-token
 #

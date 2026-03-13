@@ -52,7 +52,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
-TRANSCRIPT_KEY = os.environ.get("TRANSCRIPT_API_KEY", "")
 NEWSBLUR_USERNAME = os.environ.get("NEWSBLUR_USERNAME", "")
 NEWSBLUR_PASSWORD = os.environ.get("NEWSBLUR_PASSWORD", "")
 RSS_OVERLAP_SECONDS = max(0, int(os.environ.get("RSS_OVERLAP_SECONDS", str(48 * 60 * 60))))
@@ -98,12 +97,12 @@ EVAL_MODEL      = os.environ.get("EVAL_MODEL")      or _CFG.get("eval_model",   
 def _validate_required_env(step: str):
     common_required = ["CLOUDFLARE_GATEWAY_URL", "CLOUDFLARE_GATEWAY_TOKEN"]
     step_required = {
-        "ingest": common_required + ["NEWSBLUR_USERNAME", "NEWSBLUR_PASSWORD", "TRANSCRIPT_API_KEY"],
+        "ingest": common_required + ["NEWSBLUR_USERNAME", "NEWSBLUR_PASSWORD"],
         "backfill": common_required,
         "detect": common_required,
         "rescore": common_required,
         "report": common_required,
-        "all": common_required + ["NEWSBLUR_USERNAME", "NEWSBLUR_PASSWORD", "TRANSCRIPT_API_KEY"],
+        "all": common_required + ["NEWSBLUR_USERNAME", "NEWSBLUR_PASSWORD"],
     }
     missing = [name for name in step_required.get(step, []) if not os.environ.get(name)]
     if missing:
@@ -647,63 +646,12 @@ def fetch_newsblur(since_ts=None):
 # YouTube ingestion
 # ══════════════════════════════════════════════
 
-TRANSCRIPT_API_BASE_URL = "https://transcriptapi.com/api/v2"
+DEFUDDLE_BASE_URL = "https://defuddle.md/"
 RETRYABLE_HTTP_STATUSES = {408, 429, 503}
 NON_RETRYABLE_HTTP_STATUSES = {400, 401, 402, 403, 404, 422}
 YOUTUBE_RSS_BASE_URL = "https://www.youtube.com/feeds/videos.xml"
-TRANSCRIPT_API_USER_AGENT = "ResearchBot/1.0"
+DEFUDDLE_USER_AGENT = "ResearchBot/1.0"
 YOUTUBE_RSS_USER_AGENT = "ResearchBot/1.0"
-
-_OUTBOUND_IP_CACHE = None
-
-
-class TranscriptApiHardDeny(Exception):
-    """TranscriptAPI returned a hard deny that should never be retried."""
-
-
-def _host_container_metadata():
-    return {
-        "hostname": socket.gethostname(),
-        "platform": platform.platform(),
-        "container_id": os.environ.get("HOSTNAME", ""),
-    }
-
-
-def _get_outbound_ip():
-    global _OUTBOUND_IP_CACHE
-    if _OUTBOUND_IP_CACHE is not None:
-        return _OUTBOUND_IP_CACHE
-
-    try:
-        req = Request("https://api64.ipify.org?format=json", headers={"User-Agent": TRANSCRIPT_API_USER_AGENT})
-        with urlopen(req, timeout=3) as response:
-            payload = json.loads(response.read())
-        _OUTBOUND_IP_CACHE = str(payload.get("ip") or "unknown")
-    except Exception:
-        _OUTBOUND_IP_CACHE = "unknown"
-    return _OUTBOUND_IP_CACHE
-
-
-def _is_hard_deny(status, body):
-    if status != 403:
-        return False
-    normalized = (body or "").lower()
-    return (
-        "error_code=1010" in normalized
-        or '"error_code":1010' in normalized
-        or '"error_code": 1010' in normalized
-        or "retryable=false" in normalized
-        or '"retryable":false' in normalized
-        or '"retryable": false' in normalized
-    )
-
-
-def _write_support_packet(payload):
-    out_dir = ROOT / "logs"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    packet_file = out_dir / "transcriptapi_support.jsonl"
-    with packet_file.open("a", encoding="utf-8") as fp:
-        fp.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
 
 
 def _http_error_details(err):
@@ -720,71 +668,40 @@ def _http_error_details(err):
     return body, headers
 
 
-def _transcriptapi_get(path, params):
-    url = f"{TRANSCRIPT_API_BASE_URL}{path}?{urlencode(params)}"
-    request_headers = {
-        "Authorization": f"Bearer {TRANSCRIPT_KEY}",
-        "Accept": "application/json",
-        "User-Agent": TRANSCRIPT_API_USER_AGENT,
-    }
-    req = Request(
-        url,
-        headers=request_headers,
-    )
-
+def _http_get_text(url, *, headers=None, label="HTTP request"):
+    request_headers = {"User-Agent": DEFUDDLE_USER_AGENT}
+    if headers:
+        request_headers.update(headers)
+    req = Request(url, headers=request_headers)
     max_attempts = 4
     for attempt in range(1, max_attempts + 1):
         try:
             with urlopen(req, timeout=30) as response:
-                return json.loads(response.read())
+                return response.read().decode("utf-8", errors="replace")
         except HTTPError as e:
             status = int(e.code)
-            body, headers = _http_error_details(e)
-            timestamp = datetime.now(UTC).isoformat()
-            if _is_hard_deny(status, body):
-                support_payload = {
-                    "classification": "HARD_DENY/NON_RETRYABLE",
-                    "ray_id": headers.get("CF-RAY") or headers.get("cf-ray") or "",
-                    "timestamp": timestamp,
-                    "endpoint": path,
-                    "request_params": params,
-                    "response_body": body[:3000],
-                    "user_agent": request_headers.get("User-Agent"),
-                    "host_container_metadata": _host_container_metadata(),
-                }
-                _write_support_packet(support_payload)
-                log.error(
-                    "TranscriptAPI hard deny classification=HARD_DENY/NON_RETRYABLE ray_id=%s timestamp=%s endpoint=%s channel_id=%s outbound_ip=%s user_agent=%s",
-                    support_payload["ray_id"],
-                    timestamp,
-                    path,
-                    params.get("channel_id") or params.get("channel") or "",
-                    _get_outbound_ip(),
-                    support_payload["user_agent"],
-                )
-                raise TranscriptApiHardDeny("TranscriptAPI hard deny")
-
+            body, response_headers = _http_error_details(e)
             if status in RETRYABLE_HTTP_STATUSES and attempt < max_attempts:
                 delay = min(8.0, 0.5 * (2 ** (attempt - 1))) + random.uniform(0, 0.2)
                 log.warning(
-                    "TranscriptAPI retryable failure path=%s status=%s attempt=%s/%s; retrying in %.2fs",
-                    path,
+                    "%s retryable failure status=%s attempt=%s/%s url=%s; retrying in %.2fs",
+                    label,
                     status,
                     attempt,
                     max_attempts,
+                    url,
                     delay,
                 )
                 time.sleep(delay)
                 continue
 
-            # Log full details for non-retryable and undocumented errors.
             level = log.warning if status in NON_RETRYABLE_HTTP_STATUSES else log.error
             level(
-                "TranscriptAPI request failed path=%s status=%s params=%s headers=%s body=%s",
-                path,
+                "%s failed status=%s url=%s headers=%s body=%s",
+                label,
                 status,
-                params,
-                headers,
+                url,
+                response_headers,
                 body[:3000],
             )
             raise
@@ -818,14 +735,64 @@ def _youtube_rss_latest_videos(channel_id, limit=None):
     return videos
 
 
-def _extract_transcript_text(data):
-    for key in ("transcript", "text", "content"):
-        value = data.get(key)
-        if isinstance(value, str):
-            return value
-        if isinstance(value, list):
-            return " ".join(p.get("text", "") for p in value if isinstance(p, dict))
-    return ""
+def _parse_markdown_frontmatter(markdown):
+    if not markdown.startswith("---\n"):
+        return {}, markdown
+    end = markdown.find("\n---\n", 4)
+    if end == -1:
+        return {}, markdown
+    metadata = {}
+    for raw_line in markdown[4:end].splitlines():
+        if ":" not in raw_line:
+            continue
+        key, value = raw_line.split(":", 1)
+        cleaned = value.strip()
+        if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+            cleaned = cleaned[1:-1]
+        metadata[key.strip()] = cleaned
+    return metadata, markdown[end + len("\n---\n") :]
+
+
+def _clean_markdown_transcript(text):
+    cleaned = str(text or "")
+    cleaned = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", cleaned)
+    cleaned = re.sub(r"^\*\*\d{1,2}:\d{2}(?::\d{2})?\*\*\s*[·-]?\s*", "", cleaned, flags=re.M)
+    cleaned = cleaned.replace("\\[", "[").replace("\\]", "]")
+    cleaned = re.sub(r"\[(.*?)\]\([^)]+\)", r"\1", cleaned)
+    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"__(.*?)__", r"\1", cleaned)
+    cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _extract_youtube_transcript_from_markdown(markdown):
+    metadata, body = _parse_markdown_frontmatter(markdown)
+    match = re.search(r"^##\s+Transcript\s*$", body, re.M)
+    transcript_body = body[match.end() :] if match else body
+    next_heading = re.search(r"^##\s+", transcript_body, re.M)
+    if next_heading:
+        transcript_body = transcript_body[: next_heading.start()]
+    return {
+        "title": str(metadata.get("title") or "").strip(),
+        "transcript": _clean_markdown_transcript(transcript_body),
+    }
+
+
+def _defuddle_markdown_url(source_url):
+    cleaned = str(source_url or "").strip()
+    return f"{DEFUDDLE_BASE_URL}{quote(cleaned, safe=':/?&=#')}"
+
+
+def _fetch_youtube_transcript(video_id):
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+    markdown = _http_get_text(
+        _defuddle_markdown_url(video_url),
+        headers={"Accept": "text/markdown", "User-Agent": DEFUDDLE_USER_AGENT},
+        label="defuddle transcript fetch",
+    )
+    return _extract_youtube_transcript_from_markdown(markdown)
 
 
 def _extract_uc_channel_id(raw):
@@ -950,10 +917,6 @@ def fetch_youtube(name, channel_id, published_after=None):
     try:
         videos = _youtube_rss_latest_videos(resolved_channel_id)
         counters["youtube_discovery_successes"] += 1
-    except TranscriptApiHardDeny:
-        counters["youtube_discovery_hard_denies"] += 1
-        log.warning("YouTube discovery hard-denied for %s (%s)", name, resolved_channel_id)
-        return [], True, counters, None
     except HTTPError as e:
         if int(e.code) in RETRYABLE_HTTP_STATUSES:
             counters["youtube_discovery_retryable_failures"] += 1
@@ -994,23 +957,11 @@ def fetch_youtube(name, channel_id, published_after=None):
             continue
         title = _video_title(video)
         try:
-            transcript_data = _transcriptapi_get(
-                "/youtube/transcript",
-                {
-                    "video_url": vid,
-                    "format": "text",
-                    "include_timestamp": "false",
-                    "send_metadata": "true",
-                },
-            )
-            transcript = _extract_transcript_text(transcript_data)
+            transcript_data = _fetch_youtube_transcript(vid)
+            transcript = str(transcript_data.get("transcript") or "").strip()
         except HTTPError as e:
             log.warning("Transcript %s failed for channel=%s title=%r status=%s", vid, name, title, e.code)
             counters["youtube_transcript_failures"] += 1
-            continue
-        except TranscriptApiHardDeny:
-            counters["youtube_transcript_failures"] += 1
-            log.warning("Transcript %s hard-denied for channel=%s title=%r", vid, name, title)
             continue
         except Exception as e:
             log.warning("Transcript %s failed for channel=%s title=%r: %s", vid, name, title, e)

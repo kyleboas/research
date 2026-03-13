@@ -11,6 +11,7 @@ import main
 from main import (
     _compute_overlap_watermark,
     _effective_source_diversity,
+    _extract_youtube_transcript_from_markdown,
     _normalize_subagent_task,
     _parse_rescore_statuses,
     _parse_iso_datetime,
@@ -407,7 +408,7 @@ class PipelineHelperTests(unittest.TestCase):
             },
         ]
         with patch.object(main, "_youtube_rss_latest_videos", return_value=videos), patch.object(
-            main, "_transcriptapi_get", return_value={"transcript": "Transcript text"}
+            main, "_fetch_youtube_transcript", return_value={"transcript": "Transcript text"}
         ):
             items, discovery_failed, counters, latest_published_at = fetch_youtube(
                 "Example",
@@ -419,6 +420,25 @@ class PipelineHelperTests(unittest.TestCase):
         self.assertEqual([item["key"] for item in items], ["yt:UC12345678901234567890:new-video"])
         self.assertEqual(counters["youtube_transcript_successes"], 1)
         self.assertEqual(latest_published_at.isoformat(), "2026-03-12T00:00:00+00:00")
+
+    def test_extract_youtube_transcript_from_defuddle_markdown(self):
+        markdown = """---
+title: "Example Video"
+source: "https://www.youtube.com/watch?v=abc123"
+---
+
+![](https://www.youtube.com/watch?v=abc123)
+
+## Transcript
+
+**0:01** · First line
+**0:05** · Second line with \\[music\\]
+"""
+
+        parsed = _extract_youtube_transcript_from_markdown(markdown)
+
+        self.assertEqual(parsed["title"], "Example Video")
+        self.assertEqual(parsed["transcript"], "First line\nSecond line with [music]")
 
     def test_fetch_youtube_http_error_returns_four_tuple_for_ingest_callers(self):
         with patch.object(

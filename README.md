@@ -29,7 +29,7 @@ The repo is organized around stable surfaces rather than deep package nesting:
 
 - Pulls RSS stories from NewsBlur (`/reader/river_stories`).
 - Pulls recent videos from configured YouTube channels via channel RSS feeds.
-- Fetches transcripts from TranscriptAPI for discovered videos.
+- Fetches transcripts from `defuddle.md` for discovered videos.
 - Runs optional full-text extraction for short RSS bodies (`article_extractor.py`).
 - Re-reads a configurable overlap window on incremental runs so late-arriving RSS stories or videos are deduped instead of missed.
 - Chunks content and stores embeddings in Postgres (`source_chunks.embedding`).
@@ -84,7 +84,7 @@ Each report run also writes a persistent artifact bundle under `report_runs/<tim
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                                Data Sources                                 │
-│  RSS feeds via NewsBlur                      YouTube channels + TranscriptAPI│
+│  RSS feeds via NewsBlur                         YouTube channels + defuddle.md│
 └────────────────────────────────┬─────────────────────────────────────────────┘
                                  │
                                  ▼
@@ -142,7 +142,7 @@ Each report run also writes a persistent artifact bundle under `report_runs/<tim
 - Postgres with `pgvector`
 - Cloudflare AI Gateway URL + token (OpenAI-compatible API endpoint)
 - NewsBlur account credentials
-- TranscriptAPI key
+- internet access to `defuddle.md` for YouTube transcript fetches
 
 Install dependencies:
 
@@ -164,7 +164,6 @@ Required environment variables (see `env.example`):
 - `CLOUDFLARE_GATEWAY_TOKEN`
 - `NEWSBLUR_USERNAME`
 - `NEWSBLUR_PASSWORD`
-- `TRANSCRIPT_API_KEY`
 - database connection (`DATABASE_URL` or Railway-style `PG*` variables)
 
 Optional ingest safety knobs:
