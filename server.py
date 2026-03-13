@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import UTC, datetime
+from html import escape
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from threading import Lock
@@ -54,6 +55,7 @@ RUN_COMMANDS = {
         "--limit",
         "3",
     ],
+    "detect_policy_eval": [sys.executable, str(ROOT / "autoresearch" / "detect" / "eval_detect.py")],
     "detect_policy_eval": [sys.executable, str(ROOT / "autoresearch" / "detect" / "eval_detect.py")],
     "detect_policy_optimize": [
         sys.executable,
@@ -433,8 +435,6 @@ def _format_autoresearch_hourly_notification(summary):
     if component_durations:
         lines.append("• Step runtimes: " + " | ".join(component_durations))
     return "\n".join(lines)
-
-
 def _parse_optimize_summary(log_text):
     text = str(log_text or "")
     result = {}
@@ -848,6 +848,180 @@ def _start_step_run(step):
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
+    def _report_record(self, row, *, include_content=False):
+        metadata = row[2] if isinstance(row[2], dict) else {}
+        report_id = int(row[0])
+        record = {
+            "id": report_id,
+            "title": row[1] or "Untitled report",
+            "description": (row[3] or "")[:255],
+            "view_url": f"/reports/{report_id}",
+            "external_url": (metadata.get("url") or "") if isinstance(metadata, dict) else "",
+            "created_at": row[4].isoformat() if row[4] else None,
+            "metadata": metadata,
+        }
+        if include_content:
+            record["content"] = row[3] or ""
+        return record
+
+    def _fetch_report_by_id(self, report_id):
+        conninfo, reason = resolve_database_conninfo()
+        if not conninfo:
+            raise RuntimeError(f"database_unavailable:{reason}")
+
+        with psycopg.connect(conninfo) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, title, metadata, content, created_at
+                    FROM reports
+                    WHERE id = %s
+                    LIMIT 1
+                    """,
+                    (report_id,),
+                )
+                row = cur.fetchone()
+                return self._report_record(row, include_content=True) if row else None
+
+    def _send_html(self, body, status=200):
+        payload = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _render_report_page(self, report_id):
+        try:
+            record = self._fetch_report_by_id(report_id)
+        except Exception as exc:
+            self._send_html(
+                f"<html><body><h1>Unable to load report</h1><p>{escape(str(exc))}</p></body></html>",
+                status=500,
+            )
+            return
+
+        if not record:
+            self._send_html(
+                "<html><body><h1>Report not found</h1><p>The requested report does not exist.</p></body></html>",
+                status=404,
+            )
+            return
+
+        meta = record.get("metadata") or {}
+        meta_parts = []
+        if meta.get("complexity"):
+            meta_parts.append(f"complexity: {meta['complexity']}")
+        if meta.get("research_rounds") is not None:
+            meta_parts.append(f"rounds: {meta['research_rounds']}")
+        if meta.get("total_chunks") is not None:
+            meta_parts.append(f"chunks: {meta['total_chunks']}")
+        if meta.get("angles"):
+            meta_parts.append(f"angles: {len(meta['angles'])}")
+        meta_line = " · ".join(meta_parts)
+        external_url = record.get("external_url") or ""
+
+        body = f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{escape(record["title"])}</title>
+    <style>
+      :root {{
+        color-scheme: light;
+        --bg: #f6f4ee;
+        --paper: #fffdf7;
+        --line: #ddd6c8;
+        --text: #1d1b18;
+        --subtext: #6d655a;
+        --accent: #0f766e;
+      }}
+      body {{
+        margin: 0;
+        background: linear-gradient(180deg, #efe9db 0%, var(--bg) 28%);
+        color: var(--text);
+        font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+      }}
+      main {{
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 32px 18px 56px;
+      }}
+      .card {{
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 24px;
+        box-shadow: 0 18px 45px rgba(66, 51, 28, 0.08);
+      }}
+      h1 {{
+        margin: 0 0 10px;
+        line-height: 1.05;
+        font-size: clamp(2rem, 4vw, 3rem);
+      }}
+      .meta {{
+        color: var(--subtext);
+        margin: 0 0 18px;
+        font-size: 0.98rem;
+      }}
+      .actions {{
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin: 0 0 22px;
+      }}
+      .btn {{
+        display: inline-block;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        color: var(--text);
+        text-decoration: none;
+        padding: 8px 14px;
+        font-weight: 600;
+        background: #fff;
+      }}
+      .btn-primary {{
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }}
+      pre {{
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        line-height: 1.65;
+        font-size: 1rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        background: #fcfaf4;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 18px;
+        overflow: auto;
+      }}
+      @media (max-width: 640px) {{
+        main {{ padding: 18px 12px 34px; }}
+        .card {{ padding: 18px; border-radius: 14px; }}
+      }}
+    </style>
+  </head>
+  <body>
+    <main>
+      <article class="card">
+        <h1>{escape(record["title"])}</h1>
+        <p class="meta">{escape(record.get("created_at") or "—")}{' · ' + escape(meta_line) if meta_line else ''}</p>
+        <div class="actions">
+          <a class="btn" href="/dashboard.html#reports">Back to dashboard</a>
+          <a class="btn btn-primary" href="/api/reports/{record['id']}/raw">Open raw markdown</a>
+          {f'<a class="btn" href="{escape(external_url)}" target="_blank" rel="noreferrer">External link</a>' if external_url else ''}
+        </div>
+        <pre>{escape(record.get("content") or "")}</pre>
+      </article>
+    </main>
+  </body>
+</html>"""
+        self._send_html(body)
+
     def _ensure_sources_metadata_columns(self, cur):
         """Backfill newer ingestion columns for older `sources` tables."""
         cur.execute(
@@ -1054,24 +1228,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 # ── Reports ──
                 cur.execute(
                     """
-                    SELECT title, content, metadata, created_at
+                    SELECT id, title, metadata, content, created_at
                     FROM reports
                     ORDER BY created_at DESC, id DESC
                     LIMIT 100
                     """
                 )
-                report_items = []
-                for row in cur.fetchall():
-                    metadata = row[2] if isinstance(row[2], dict) else {}
-                    report_items.append(
-                        {
-                            "title": row[0] or "Untitled report",
-                            "description": (row[1] or "")[:255],
-                            "url": (metadata.get("url") or "") if isinstance(metadata, dict) else "",
-                            "created_at": row[3].isoformat() if row[3] else None,
-                            "metadata": metadata,
-                        }
-                    )
+                report_items = [self._report_record(row) for row in cur.fetchall()]
 
                 # ── Tactical patterns ──
                 cur.execute("SELECT to_regclass('tactical_patterns')")
@@ -1371,6 +1534,42 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
             self._send_json(payload)
             return
+
+        if parsed.path.startswith("/api/reports/") and parsed.path.endswith("/raw"):
+            parts = [part for part in parsed.path.split("/") if part]
+            if len(parts) == 4 and parts[0] == "api" and parts[1] == "reports" and parts[3] == "raw":
+                try:
+                    report_id = int(parts[2])
+                except ValueError:
+                    self._send_json({"ok": False, "error": "invalid_report_id"}, status=400)
+                    return
+                try:
+                    record = self._fetch_report_by_id(report_id)
+                except Exception as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=500)
+                    return
+                if not record:
+                    self._send_json({"ok": False, "error": "report_not_found"}, status=404)
+                    return
+
+                body = (record.get("content") or "").encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+        if parsed.path.startswith("/reports/"):
+            parts = [part for part in parsed.path.split("/") if part]
+            if len(parts) == 2 and parts[0] == "reports":
+                try:
+                    report_id = int(parts[1])
+                except ValueError:
+                    self._send_html("<html><body><h1>Invalid report id</h1></body></html>", status=400)
+                    return
+                self._render_report_page(report_id)
+                return
 
         if self.path == "/":
             self.path = "/dashboard.html"

@@ -86,8 +86,44 @@
         gap: 12px;
         border-bottom: 1px solid var(--line);
         padding: 14px 0;
-        text-decoration: none;
         color: inherit;
+      }
+
+      a.list-item {
+        text-decoration: none;
+      }
+
+      a.list-item:hover .item-title,
+      a.list-item:focus-visible .item-title {
+        text-decoration: underline;
+        text-underline-offset: 0.12em;
+      }
+
+      .list-item-actions {
+        margin-top: 10px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .inline-action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 34px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--text);
+        text-decoration: none;
+        font-size: 0.84rem;
+        font-weight: 600;
+      }
+
+      .inline-action:hover,
+      .inline-action:focus-visible {
+        border-color: #ccd7ff;
       }
 
       .list-item:last-child { border-bottom: 0; }
@@ -419,6 +455,14 @@
       const reportsEl = document.getElementById("reports");
       const statusEl = document.getElementById("status");
 
+      const createListItem = ({ href = "", targetBlank = false, bodyHtml = "", timeHtml = "—" }) => {
+        const tag = href ? "a" : "article";
+        const attrs = href
+          ? ` class="list-item" href="${escapeHtml(href)}"${targetBlank ? ' target="_blank" rel="noreferrer"' : ""}`
+          : ` class="list-item"`;
+        return `<${tag}${attrs}>${bodyHtml}<span class="item-time">${timeHtml}</span></${tag}>`;
+      };
+
       const extractionBadge = (method) => {
         const cls = `badge badge-${method || 'fallback'}`;
         return `<span class="${cls}">${escapeHtml(method || 'rss')}</span>`;
@@ -476,18 +520,21 @@
 
           ingestEl.insertAdjacentHTML(
             "beforeend",
-            `<a class="list-item" href="${hasUrl ? item.url : "#"}" ${hasUrl ? `target="_blank" rel="noreferrer"` : ""}>` +
-            `<div>` +
-            `<h2 class="item-title">${safeText(item.title, "Untitled")}</h2>` +
-            `<p class="item-sub">${truncate(safeText(item.description, ""))}</p>` +
-            `<div class="ingest-detail-row">` +
-            `<span class="badge badge-${item.source_type === 'youtube' ? 'youtube' : 'rss'}">${escapeHtml(item.source_type || 'unknown')}</span>` +
-            extractionBadge(item.extraction_method) +
-            (detailLine ? `<span style="color:var(--subtext);font-size:0.85rem">${detailLine}</span>` : '') +
-            `</div>` +
-            `</div>` +
-            `<span class="item-time">${formatIsoTime(item.created_at)}</span>` +
-            `</a>`
+            createListItem({
+              href: hasUrl ? item.url : "",
+              targetBlank: hasUrl,
+              bodyHtml:
+                `<div>` +
+                `<h2 class="item-title">${safeText(item.title, "Untitled")}</h2>` +
+                `<p class="item-sub">${truncate(safeText(item.description, ""))}</p>` +
+                `<div class="ingest-detail-row">` +
+                `<span class="badge badge-${item.source_type === 'youtube' ? 'youtube' : 'rss'}">${escapeHtml(item.source_type || 'unknown')}</span>` +
+                extractionBadge(item.extraction_method) +
+                (detailLine ? `<span style="color:var(--subtext);font-size:0.85rem">${detailLine}</span>` : '') +
+                `</div>` +
+                `</div>`,
+              timeHtml: formatIsoTime(item.created_at),
+            })
           );
         });
       };
@@ -621,7 +668,8 @@
         }
 
         items.forEach((report) => {
-          const hasUrl = Boolean(report.url);
+          const viewUrl = report.view_url || "";
+          const externalUrl = report.external_url || "";
           const meta = report.metadata || {};
           const metaParts = [];
           if (meta.complexity) metaParts.push(`complexity: ${meta.complexity}`);
@@ -632,14 +680,20 @@
 
           reportsEl.insertAdjacentHTML(
             "beforeend",
-            `<a class="list-item" href="${hasUrl ? report.url : "#"}" ${hasUrl ? `target="_blank" rel="noreferrer"` : ""}>` +
-            `<div>` +
-            `<h2 class="item-title">${safeText(report.title, "Untitled report")}</h2>` +
-            `<p class="item-sub">${truncate(safeText(report.description, ""))}</p>` +
-            (metaLine ? `<p class="item-meta">${escapeHtml(metaLine)}</p>` : '') +
-            `</div>` +
-            `<span class="item-time">${formatIsoTime(report.created_at)}</span>` +
-            `</a>`
+            createListItem({
+              bodyHtml:
+                `<div>` +
+                `<h2 class="item-title">${viewUrl ? `<a href="${escapeHtml(viewUrl)}" target="_blank" rel="noreferrer">${safeText(report.title, "Untitled report")}</a>` : safeText(report.title, "Untitled report")}</h2>` +
+                `<p class="item-sub">${truncate(safeText(report.description, ""))}</p>` +
+                (metaLine ? `<p class="item-meta">${escapeHtml(metaLine)}</p>` : '') +
+                `<div class="list-item-actions">` +
+                (viewUrl ? `<a class="inline-action" href="${escapeHtml(viewUrl)}" target="_blank" rel="noreferrer">Open report</a>` : '') +
+                (report.id != null ? `<a class="inline-action" href="/api/reports/${encodeURIComponent(report.id)}/raw" target="_blank" rel="noreferrer">Raw markdown</a>` : '') +
+                (externalUrl ? `<a class="inline-action" href="${escapeHtml(externalUrl)}" target="_blank" rel="noreferrer">External link</a>` : '') +
+                `</div>` +
+                `</div>`,
+              timeHtml: formatIsoTime(report.created_at),
+            })
           );
         });
       };
@@ -813,6 +867,7 @@
         ];
 
         const runEntries = ["ingest", "detect", "rescore", "report", "autoresearch_hourly", "ingest_policy_optimize", "report_policy_eval", "report_policy_benchmark", "report_policy_optimize", "detect_policy_eval", "detect_policy_optimize"].map((name) => ({
+        const runEntries = ["ingest", "detect", "rescore", "report", "autoresearch_hourly", "ingest_policy_optimize", "report_policy_eval", "report_policy_benchmark", "report_policy_optimize", "detect_policy_eval", "detect_policy_optimize"].map((name) => ({
           name,
           data: stepRuns?.[name] || { status: "idle" },
         }));
@@ -843,7 +898,7 @@
               ${mainSteps.map((step) => `<button class="run-step-btn" data-run-step="${step}" ${isAnyRunning ? "disabled" : ""}>${step === "rescore" ? "Rescore past trends" : `Run ${step}`}</button>`).join("")}
             </div>
             <p class="status-label" style="margin-top:18px">Autoresearch pipeline</p>
-            <p class="status-subvalue">No-LLM daily experiments that update ingest, detect, and report policies for future main-pipeline runs.</p>
+            <p class="status-subvalue">No-LLM hourly experiments that update ingest, detect, and report policies for future main-pipeline runs.</p>
             <div class="run-controls">
               ${autoresearchSteps.map((step) => `<button class="run-step-btn" data-run-step="${step}" ${isAnyRunning ? "disabled" : ""}>${step === "autoresearch_hourly" ? "Run autoresearch" : step === "ingest_policy_optimize" ? "Tune ingest policy" : step === "report_policy_eval" ? "Test report quality" : step === "report_policy_optimize" ? "Tune report policy" : step === "detect_policy_eval" ? "Test detect policy" : step === "detect_policy_optimize" ? "Tune detect policy" : `Run ${step}`}</button>`).join("")}
             </div>
@@ -908,18 +963,32 @@
         }
       };
 
+      const activateTab = (tabName) => {
+        const target = document.getElementById(tabName) ? tabName : "logs";
+        const tabs = [...document.querySelectorAll(".tab-btn")];
+        tabs.forEach((el) => el.classList.toggle("active", el.dataset.tab === target));
+        document.querySelectorAll(".tab").forEach((el) => el.classList.toggle("active", el.id === target));
+      };
+
+      const loadInitialTab = () => {
+        const hashValue = (window.location.hash || "").replace(/^#/, "");
+        activateTab(hashValue || "logs");
+      };
+
+      loadInitialTab();
       loadDashboard();
       dashboardRefreshTimer = setInterval(loadDashboard, 15000);
 
       const tabs = [...document.querySelectorAll(".tab-btn")];
       tabs.forEach((btn) => {
         btn.addEventListener("click", () => {
-          tabs.forEach((el) => el.classList.remove("active"));
-          document.querySelectorAll(".tab").forEach((el) => el.classList.remove("active"));
-          btn.classList.add("active");
-          document.getElementById(btn.dataset.tab).classList.add("active");
+          const tabName = btn.dataset.tab;
+          activateTab(tabName);
+          window.history.replaceState(null, "", `#${tabName}`);
         });
       });
+
+      window.addEventListener("hashchange", loadInitialTab);
     </script>
 
   </body>

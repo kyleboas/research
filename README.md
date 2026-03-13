@@ -325,6 +325,9 @@ policy when the best candidate beats the baseline by at least the configured
 minimum improvement. The daily optimize path is no-LLM: it scores recent stored
 reports, simulates candidate policies mathematically, and writes the winning
 policy back for future main-pipeline runs. Each run is also persisted to Postgres in
+minimum improvement. The daily optimize path is no-LLM: it scores recent stored
+reports, simulates candidate policies mathematically, and writes the winning
+policy back for future main-pipeline runs. Each run is also persisted to Postgres in
 `report_policy_runs`, and summary fields are mirrored into `pipeline_state` for
 dashboard/debug visibility.
 

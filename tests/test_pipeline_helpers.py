@@ -11,6 +11,7 @@ import main
 from main import (
     _compute_overlap_watermark,
     _effective_source_diversity,
+    _extract_youtube_transcript_from_markdown,
     _normalize_subagent_task,
     _parse_rescore_statuses,
     _parse_iso_datetime,
