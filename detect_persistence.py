@@ -21,6 +21,13 @@ def upsert_trend_candidate(conn, candidate: dict, feedback_adjustment: int):
     base_score = int(candidate["score"])
     novelty = candidate.get("novelty_score")
     source_diversity = candidate.get("source_diversity", len(candidate.get("sources") or []))
+    
+    # Trajectory fields
+    velocity = candidate.get("velocity_score")
+    acceleration = candidate.get("acceleration_score")
+    direction = candidate.get("trajectory_direction")
+    early_trend = candidate.get("early_trend_score")
+    trajectory_reasoning = candidate.get("trajectory_reasoning")
 
     with conn.cursor() as cur:
         cur.execute(
@@ -51,7 +58,12 @@ def upsert_trend_candidate(conn, candidate: dict, feedback_adjustment: int):
                     novelty_score = %s,
                     source_diversity = %s,
                     status = %s,
-                    detected_at = NOW()
+                    detected_at = NOW(),
+                    velocity_score = %s,
+                    acceleration_score = %s,
+                    trajectory_direction = %s,
+                    early_trend_score = %s,
+                    trajectory_reasoning = %s
                 WHERE id = %s
                 RETURNING id, final_score
                 """,
@@ -64,6 +76,11 @@ def upsert_trend_candidate(conn, candidate: dict, feedback_adjustment: int):
                     novelty,
                     stored_diversity,
                     next_status,
+                    velocity,
+                    acceleration,
+                    direction,
+                    early_trend,
+                    trajectory_reasoning,
                     candidate_id,
                 ),
             )
@@ -79,8 +96,10 @@ def upsert_trend_candidate(conn, candidate: dict, feedback_adjustment: int):
         cur.execute(
             """
             INSERT INTO trend_candidates
-            (trend_fingerprint, trend, reasoning, score, feedback_adjustment, final_score, novelty_score, source_diversity)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            (trend_fingerprint, trend, reasoning, score, feedback_adjustment, final_score, 
+             novelty_score, source_diversity, velocity_score, acceleration_score, 
+             trajectory_direction, early_trend_score, trajectory_reasoning)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, final_score
             """,
             (
@@ -92,6 +111,11 @@ def upsert_trend_candidate(conn, candidate: dict, feedback_adjustment: int):
                 final_score,
                 novelty,
                 source_diversity,
+                velocity,
+                acceleration,
+                direction,
+                early_trend,
+                trajectory_reasoning,
             ),
         )
         row = cur.fetchone()

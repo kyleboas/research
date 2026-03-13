@@ -311,29 +311,6 @@
       .badge-step-success { background: #d1fae5; color: #065f46; }
       .badge-step-failed { background: #fee2e2; color: #991b1b; }
 
-      /* ── Score breakdown bar ── */
-      .score-breakdown {
-        display: flex;
-        gap: 6px;
-        align-items: center;
-        flex-wrap: wrap;
-        margin: 4px 0;
-        font-size: 0.85rem;
-      }
-      .score-breakdown .score-part {
-        padding: 2px 6px;
-        border-radius: 4px;
-        background: #f0f1f3;
-        font-weight: 500;
-        white-space: nowrap;
-      }
-      .score-breakdown .score-part.positive { background: #d1fae5; color: #065f46; }
-      .score-breakdown .score-part.negative { background: #fee2e2; color: #991b1b; }
-      .score-breakdown .score-total {
-        font-weight: 700;
-        font-size: 1rem;
-      }
-
       /* ── Pattern card ── */
       .pattern-card {
         border-bottom: 1px solid var(--line);
@@ -571,252 +548,10 @@
         return `<span class="${cls}">${escapeHtml((status || 'pending').replaceAll('_', ' '))}</span>`;
       };
 
-      const noveltyBadge = (score) => {
-        if (score == null) return '<span class="badge badge-fallback">no novelty data</span>';
-        let cls = 'badge-novelty-mid';
-        let label = `${(score * 100).toFixed(0)}%`;
-        if (score >= 0.7) cls = 'badge-novelty-high';
-        else if (score < 0.3) cls = 'badge-novelty-low';
-        return `<span class="badge ${cls}">novelty ${label}</span>`;
-      };
-
-      const formatNumber = (n) => {
-        if (n == null) return "—";
-        return Number(n).toLocaleString();
-      };
-
-      const formatSignedNumber = (value, digits = 2) => {
-        const numeric = Number(value);
-        if (!Number.isFinite(numeric)) return "—";
-        return `${numeric > 0 ? "+" : ""}${numeric.toFixed(digits)}`;
-      };
-
-      const formatFixed = (value, digits = 2) => {
-        const numeric = Number(value);
-        if (!Number.isFinite(numeric)) return "—";
-        return numeric.toFixed(digits);
-      };
-
-      const renderAutoresearchChart = (history) => {
-        const runs = Array.isArray(history) ? history.slice(-16) : [];
-        if (!runs.length) {
-          return `<section class="status-card chart-card"><h2 class="chart-title">Autoresearch improvement</h2><div class="chart-empty">No hourly autoresearch history yet. Run the hourly autoresearch pipeline to start tracking improvement over time.</div></section>`;
-        }
-
-        const width = 820;
-        const height = 320;
-        const margin = { top: 18, right: 54, bottom: 48, left: 42 };
-        const plotWidth = width - margin.left - margin.right;
-        const plotHeight = height - margin.top - margin.bottom;
-        const leftTicks = [0, 25, 50, 75, 100];
-        const runtimeValues = runs
-          .map((run) => Number(run.runtime_minutes))
-          .filter((value) => Number.isFinite(value) && value >= 0);
-        const runtimeMax = Math.max(1, ...runtimeValues);
-        const runtimeTickLabels = [0, runtimeMax];
-        const msValues = runs
-          .map((run) => new Date(run.started_at).getTime())
-          .filter((value) => Number.isFinite(value));
-        const minMs = msValues.length ? Math.min(...msValues) : 0;
-        const maxMs = msValues.length ? Math.max(...msValues) : minMs;
-
-        const xFor = (run, index) => {
-          const ms = new Date(run.started_at).getTime();
-          if (!Number.isFinite(ms) || minMs === maxMs) {
-            const step = runs.length <= 1 ? plotWidth / 2 : (plotWidth / Math.max(1, runs.length - 1)) * index;
-            return margin.left + step;
-          }
-          return margin.left + ((ms - minMs) / Math.max(1, maxMs - minMs)) * plotWidth;
-        };
-        const leftYFor = (value) => margin.top + plotHeight - (Math.max(0, Math.min(100, Number(value))) / 100) * plotHeight;
-        const rightYFor = (value) => margin.top + plotHeight - (Math.max(0, Number(value)) / runtimeMax) * plotHeight;
-
-        const buildLine = (key) => {
-          const segments = [];
-          runs.forEach((run, index) => {
-            const value = Number(run[key]);
-            if (!Number.isFinite(value)) return;
-            const x = xFor(run, index);
-            const y = leftYFor(value);
-            segments.push(`${segments.length ? "L" : "M"} ${x.toFixed(2)} ${y.toFixed(2)}`);
-          });
-          return segments.join(" ");
-        };
-
-        const buildDots = (key, color) =>
-          runs
-            .map((run, index) => {
-              const value = Number(run[key]);
-              if (!Number.isFinite(value)) return "";
-              return `<circle cx="${xFor(run, index).toFixed(2)}" cy="${leftYFor(value).toFixed(2)}" r="3.5" fill="${color}" />`;
-            })
-            .join("");
-
-        const runtimeBars = runs
-          .map((run, index) => {
-            const value = Number(run.runtime_minutes);
-            if (!Number.isFinite(value) || value < 0) return "";
-            const x = xFor(run, index) - 8;
-            const y = rightYFor(value);
-            const barHeight = margin.top + plotHeight - y;
-            return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="16" height="${barHeight.toFixed(2)}" rx="5" fill="#dce7ff" stroke="#b4c9ff" />`;
-          })
-          .join("");
-
-        const gridLines = leftTicks
-          .map((tick) => {
-            const y = leftYFor(tick);
-            return `<line x1="${margin.left}" y1="${y.toFixed(2)}" x2="${width - margin.right}" y2="${y.toFixed(2)}" stroke="#e5e5e7" stroke-dasharray="4 4" />
-              <text x="${margin.left - 8}" y="${(y + 4).toFixed(2)}" text-anchor="end" font-size="11" fill="#6f7177">${tick}</text>`;
-          })
-          .join("");
-
-        const xTicks = runs
-          .map((run, index) => ({ run, index }))
-          .filter(({ index }) => index === 0 || index === runs.length - 1 || index === Math.floor((runs.length - 1) / 2))
-          .map(({ run, index }) => {
-            const x = xFor(run, index);
-            const label = new Date(run.started_at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-            return `<line x1="${x.toFixed(2)}" y1="${height - margin.bottom}" x2="${x.toFixed(2)}" y2="${height - margin.bottom + 6}" stroke="#c9ccd3" />
-              <text x="${x.toFixed(2)}" y="${height - margin.bottom + 22}" text-anchor="middle" font-size="11" fill="#6f7177">${escapeHtml(label)}</text>`;
-          })
-          .join("");
-
-        const latest = runs[runs.length - 1] || {};
-        const previous = runs.length > 1 ? runs[runs.length - 2] : null;
-        const qualityDelta =
-          previous && Number.isFinite(Number(latest.quality_index)) && Number.isFinite(Number(previous.quality_index))
-            ? Number(latest.quality_index) - Number(previous.quality_index)
-            : null;
-
-        return `<section class="status-card chart-card">
-          <div class="chart-header">
-            <div>
-              <h2 class="chart-title">Autoresearch improvement</h2>
-              <p class="chart-note">Score is the average of the stored detect-policy eval and report-quality eval for each hourly autoresearch run. Bars show total runtime in minutes.</p>
-            </div>
-            <div class="chart-pill-row">
-              <span class="chart-pill"><strong>Latest score</strong> ${formatFixed(latest.quality_index)}</span>
-              <span class="chart-pill"><strong>Change vs previous</strong> ${qualityDelta == null ? "—" : formatSignedNumber(qualityDelta)}</span>
-              <span class="chart-pill"><strong>Latest runtime</strong> ${safeText(latest.duration_human, "—")}</span>
-            </div>
-          </div>
-          <div class="chart-legend">
-            <span class="chart-legend-item"><span class="chart-legend-swatch chart-legend-quality"></span>Composite score</span>
-            <span class="chart-legend-item"><span class="chart-legend-swatch chart-legend-detect"></span>Detect eval</span>
-            <span class="chart-legend-item"><span class="chart-legend-swatch chart-legend-report"></span>Report eval</span>
-            <span class="chart-legend-item"><span class="chart-legend-swatch chart-legend-runtime"></span>Runtime</span>
-          </div>
-          <div class="chart-pill-row">
-            <span class="chart-pill"><strong>Latest ingest delta</strong> ${formatSignedNumber(latest.ingest_policy_delta)}</span>
-            <span class="chart-pill"><strong>Latest detect delta</strong> ${formatSignedNumber(latest.detect_policy_delta)}</span>
-            <span class="chart-pill"><strong>Latest report delta</strong> ${formatSignedNumber(latest.report_policy_delta)}</span>
-            <span class="chart-pill"><strong>Report apply</strong> ${escapeHtml(safeText(latest.report_policy_apply_decision, "unknown"))}</span>
-          </div>
-          <div class="autoresearch-chart">
-            <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Autoresearch improvement chart">
-              <text x="${margin.left}" y="12" font-size="11" fill="#6f7177">Score</text>
-              <text x="${width - margin.right}" y="12" font-size="11" fill="#6f7177" text-anchor="end">Runtime (min)</text>
-              ${gridLines}
-              <line x1="${margin.left}" y1="${height - margin.bottom}" x2="${width - margin.right}" y2="${height - margin.bottom}" stroke="#c9ccd3" />
-              <line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${height - margin.bottom}" stroke="#c9ccd3" />
-              <line x1="${width - margin.right}" y1="${margin.top}" x2="${width - margin.right}" y2="${height - margin.bottom}" stroke="#c9ccd3" />
-              ${runtimeBars}
-              <path d="${buildLine("quality_index")}" fill="none" stroke="#2f6fed" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-              <path d="${buildLine("detect_eval_score")}" fill="none" stroke="#138a5b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.9" />
-              <path d="${buildLine("report_eval_score")}" fill="none" stroke="#c67012" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.9" />
-              ${buildDots("quality_index", "#2f6fed")}
-              ${buildDots("detect_eval_score", "#138a5b")}
-              ${buildDots("report_eval_score", "#c67012")}
-              ${runtimeTickLabels
-                .map((tick) => {
-                  const y = rightYFor(tick);
-                  return `<text x="${width - margin.right + 8}" y="${(y + 4).toFixed(2)}" font-size="11" fill="#6f7177">${formatFixed(tick, tick >= 10 ? 0 : 1)}m</text>`;
-                })
-                .join("")}
-              ${xTicks}
-            </svg>
-          </div>
-        </section>`;
-      };
-
-      const renderLogs = (items) => {
-        logsEl.innerHTML = "";
-        if (!items.length) {
-          renderEmpty(logsEl, "No workflow events yet", "Run ingest/detect/report steps to populate logs.");
-          return;
-        }
-
-        items.forEach((item) => {
-          logsEl.insertAdjacentHTML(
-            "beforeend",
-            `<article class="list-item"><div><h2 class="item-title">${safeText(item.event, "Event")}</h2><p class="item-sub">${truncate(safeText(item.detail, ""))}</p></div><span class="item-time">${formatIsoTime(item.time)}</span></article>`
-          );
-        });
-      };
-
-      const renderIngestItems = (items) => {
-        ingestEl.innerHTML = "";
-        if (!items.length) {
-          renderEmpty(ingestEl, "No ingested items yet", "Run ingest to populate this tab.");
-          return;
-        }
-
-        items.forEach((item) => {
-          const hasUrl = Boolean(item.url);
-          const detailParts = [];
-          if (item.author) detailParts.push(`by ${escapeHtml(item.author)}`);
-          if (item.sitename) detailParts.push(escapeHtml(item.sitename));
-          if (item.publish_date) detailParts.push(`published ${item.publish_date}`);
-          if (item.content_length) detailParts.push(`${formatNumber(item.content_length)} chars`);
-          const detailLine = detailParts.length ? detailParts.join(' · ') : '';
-
-          ingestEl.insertAdjacentHTML(
-            "beforeend",
-            createListItem({
-              href: hasUrl ? item.url : "",
-              targetBlank: hasUrl,
-              bodyHtml:
-                `<div>` +
-                `<h2 class="item-title">${safeText(item.title, "Untitled")}</h2>` +
-                `<p class="item-sub">${truncate(safeText(item.description, ""))}</p>` +
-                `<div class="ingest-detail-row">` +
-                `<span class="badge badge-${item.source_type === 'youtube' ? 'youtube' : 'rss'}">${escapeHtml(item.source_type || 'unknown')}</span>` +
-                extractionBadge(item.extraction_method) +
-                (detailLine ? `<span style="color:var(--subtext);font-size:0.85rem">${detailLine}</span>` : '') +
-                `</div>` +
-                `</div>`,
-              timeHtml: formatIsoTime(item.created_at),
-            })
-          );
-        });
-      };
-
-      const submitTrendFeedback = async (trendCandidateId, feedback, buttonEl) => {
-        const priorText = buttonEl.textContent;
-        buttonEl.disabled = true;
-        buttonEl.textContent = "Saving...";
-
-        try {
-          const response = await fetch("/api/trend-feedback", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ trend_candidate_id: trendCandidateId, feedback }),
-          });
-          const payload = await response.json();
-          if (!response.ok || !payload.ok) {
-            throw new Error(payload.error || "Could not save feedback");
-          }
-          await loadDashboard();
-        } catch (error) {
-          buttonEl.textContent = "Try again";
-          alert(`Feedback failed: ${error.message}`);
-        } finally {
-          buttonEl.disabled = false;
-          if (buttonEl.textContent !== "Try again") {
-            buttonEl.textContent = priorText;
-          }
-        }
+      const trajectoryArrow = (direction) => {
+        if (direction === 'rising') return '<span style="color:#16a34a;font-weight:700">↑</span>';
+        if (direction === 'falling') return '<span style="color:#dc2626;font-weight:700">↓</span>';
+        return '<span style="color:#9ca3af;font-weight:700">→</span>';
       };
 
       const renderDetect = (items) => {
@@ -826,46 +561,45 @@
           return;
         }
 
+        // Simplified header
+        detectEl.insertAdjacentHTML("beforeend",
+          `<p style="color:var(--subtext);margin:8px 0 16px;font-size:0.9rem">` +
+          `${items.length} trends detected. Rising trajectories (↑) indicate early-stage trends worth watching.</p>`
+        );
+
         items.forEach((item, index) => {
           const sources = Array.isArray(item.sources) ? item.sources : [];
-          const sourcesHtml = sources.length
-            ? `<li><strong>Supporting sources (${sources.length})</strong><ul class="sources-list">${sources
-                .map((source) => `<li>${source.url ? `<a href="${escapeHtml(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(safeText(source.title, "Untitled source"))}</a>` : escapeHtml(safeText(source.title, "Untitled source"))}</li>`)
-                .join("")}</ul></li>`
-            : "<li><strong>Supporting sources</strong>: none linked by detection model yet.</li>";
-
-          // Score breakdown
-          const feedbackAdj = item.feedback_adjustment || 0;
-          const feedbackClass = feedbackAdj > 0 ? 'positive' : feedbackAdj < 0 ? 'negative' : '';
-          const noveltyVal = item.novelty_score;
-          const noveltyAdj = noveltyVal != null ? Math.round((noveltyVal - 0.5) * 30) : 0;
-          const noveltyClass = noveltyAdj > 0 ? 'positive' : noveltyAdj < 0 ? 'negative' : '';
+          const direction = item.trajectory_direction || 'flat';
+          const arrow = trajectoryArrow(direction);
+          
+          // Simplified novelty badge
+          const noveltyBadge = (score) => {
+            if (score == null) return '';
+            if (score >= 0.7) return '<span class="badge badge-novelty-high">High novelty</span>';
+            if (score >= 0.4) return '<span class="badge badge-novelty-mid">Medium</span>';
+            return '<span class="badge badge-novelty-low">Low</span>';
+          };
 
           detectEl.insertAdjacentHTML(
             "beforeend",
             `<article class="trend" data-trend-id="${item.id}">` +
-            `<h3><span class="rank">#${index + 1}</span>${escapeHtml(safeText(item.trend, "Untitled trend"))}</h3>` +
-            `<div class="score-breakdown">` +
-            `<span class="score-total">${safeText(item.score, "—")}</span>` +
-            `<span class="score-part">base: ${safeText(item.base_score, "—")}</span>` +
-            (feedbackAdj !== 0 ? `<span class="score-part ${feedbackClass}">feedback: ${feedbackAdj > 0 ? '+' : ''}${feedbackAdj}</span>` : '') +
-            (noveltyVal != null ? `<span class="score-part ${noveltyClass}">novelty: ${noveltyAdj > 0 ? '+' : ''}${noveltyAdj}</span>` : '') +
+            `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">` +
+            `<h3 style="margin:0;flex:1"><span class="rank">#${index + 1}</span>${escapeHtml(safeText(item.trend, "Untitled trend"))}</h3>` +
+            `<span style="font-size:1.1rem;font-weight:700;color:var(--accent)">${safeText(item.score, "—")}</span>` +
             `</div>` +
-            `<div style="margin:6px 0;display:flex;gap:8px;flex-wrap:wrap">` +
-            statusBadge(item.status) +
+            `<div style="margin:8px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center">` +
+            `${arrow} <span style="font-size:0.85rem;color:var(--subtext);text-transform:capitalize">${direction}</span>` +
             noveltyBadge(item.novelty_score) +
             (item.source_diversity ? `<span class="badge badge-rss">${item.source_diversity} sources</span>` : '') +
+            (item.early_trend_score != null ? `<span style="font-size:0.8rem;color:var(--subtext)">Early-trend: ${Math.round(item.early_trend_score * 100)}%</span>` : '') +
             `</div>` +
-            `<ul class="source-thread">` +
-            `<li>Detected: ${formatIsoTime(item.detected_at)}</li>` +
-            (item.reasoning ? `<li>${escapeHtml(truncate(item.reasoning))}</li>` : '') +
-            sourcesHtml +
-            `</ul>` +
+            (item.trajectory_reasoning ? 
+              `<p style="margin:6px 0;font-size:0.88rem;color:#374151">${escapeHtml(item.trajectory_reasoning)}</p>` : '') +
+            (item.reasoning ? `<p style="margin:6px 0;font-size:0.85rem;color:var(--subtext)">${escapeHtml(truncate(item.reasoning, 120))}</p>` : '') +
             `<div class="feedback-row">` +
             `<button class="feedback-btn" data-feedback="important">Important</button>` +
             `<button class="feedback-btn" data-feedback="not_important">Not important</button>` +
             `</div>` +
-            `<p class="feedback-note">Your feedback influences future detect scoring.</p>` +
             `</article>`
           );
         });

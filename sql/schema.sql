@@ -247,6 +247,17 @@ ALTER TABLE trend_candidates
     ADD COLUMN IF NOT EXISTS source_diversity INT DEFAULT 0,
     ADD COLUMN IF NOT EXISTS pattern_ids BIGINT[];
 
+-- Trajectory tracking for early-trend detection
+ALTER TABLE trend_candidates
+    ADD COLUMN IF NOT EXISTS velocity_score DOUBLE PRECISION DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS acceleration_score DOUBLE PRECISION DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS trajectory_direction TEXT DEFAULT 'flat',
+    ADD COLUMN IF NOT EXISTS early_trend_score DOUBLE PRECISION DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS trajectory_reasoning TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_trend_candidates_early_trend ON trend_candidates (early_trend_score DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_trend_candidates_trajectory ON trend_candidates (trajectory_direction, early_trend_score DESC NULLS LAST);
+
 -- BERTrend topic tracker state (JSON snapshot of TopicTracker)
 CREATE TABLE IF NOT EXISTS topic_snapshots (
     id BIGSERIAL PRIMARY KEY,

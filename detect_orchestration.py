@@ -15,6 +15,7 @@ from detect_scoring import (
     load_feedback_embeddings,
     load_feedback_keyword_weights,
 )
+from detect_trajectory import TrajectoryAnalyzer, batch_analyze_trajectories, filter_early_trends
 
 log = logging.getLogger("research")
 
@@ -30,6 +31,8 @@ def run_detect(
     run_backfill_fn,
     detect_trends_fn,
     embed_fn,
+    trajectory_analyzer: TrajectoryAnalyzer | None = None,
+    early_trend_mode: bool = True,
 ):
     if min_new_sources > 0:
         latest_new = load_state_fn(conn, "last_ingest_new_sources")
@@ -78,6 +81,34 @@ def run_detect(
             feedback_embeddings,
             embed_fn=embed_fn,
         )
+
+    # Trajectory analysis for early-trend detection
+    if trajectory_analyzer is None:
+        trajectory_analyzer = TrajectoryAnalyzer()
+    
+    candidates = batch_analyze_trajectories(conn, candidates, analyzer=trajectory_analyzer)
+    
+    # Count rising vs falling trends
+    rising_count = sum(1 for c in candidates if c.get("trajectory_direction") == "rising")
+    falling_count = sum(1 for c in candidates if c.get("trajectory_direction") == "falling")
+    flat_count = sum(1 for c in candidates if c.get("trajectory_direction") == "flat")
+    log.info(
+        "Trajectory analysis: %d rising, %d falling, %d flat trajectories",
+        rising_count, falling_count, flat_count
+    )
+    
+    # In early-trend mode, filter to focus on rising trends with good early-trend scores
+    if early_trend_mode:
+        early_trends = filter_early_trends(candidates, min_early_trend_score=0.5, require_rising=True)
+        if early_trends:
+            log.info(
+                "Early-trend mode: filtered %d candidates to %d early-trends (top score: %.2f)",
+                len(candidates), len(early_trends), 
+                max(c.get("early_trend_score", 0) for c in early_trends)
+            )
+            candidates = early_trends
+        else:
+            log.info("Early-trend mode: no candidates meet early-trend criteria, keeping all")
 
     stored_scores = persist_detect_candidates(conn, candidates)
     conn.commit()

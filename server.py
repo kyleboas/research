@@ -1020,7 +1020,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{escape(record["title"])}</title>
+    <title>{escape(record["title"])}</h1>
     <style>
       :root {{
         color-scheme: light;
@@ -1252,15 +1252,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     """
                     SELECT column_name FROM information_schema.columns
                     WHERE table_name = 'trend_candidates'
-                    AND column_name IN ('novelty_score', 'source_diversity')
+                    AND column_name IN ('novelty_score', 'source_diversity', 'velocity_score', 'acceleration_score', 'trajectory_direction', 'early_trend_score', 'trajectory_reasoning')
                     """
                 )
                 available_cols = {row[0] for row in cur.fetchall()}
                 has_novelty = "novelty_score" in available_cols
                 has_diversity = "source_diversity" in available_cols
+                has_trajectory = "velocity_score" in available_cols
 
                 novelty_select = "tc.novelty_score" if has_novelty else "NULL AS novelty_score"
                 diversity_select = "tc.source_diversity" if has_diversity else "0 AS source_diversity"
+                velocity_select = "tc.velocity_score" if has_trajectory else "NULL AS velocity_score"
+                acceleration_select = "tc.acceleration_score" if has_trajectory else "NULL AS acceleration_score"
+                direction_select = "tc.trajectory_direction" if has_trajectory else "NULL AS trajectory_direction"
+                early_trend_select = "tc.early_trend_score" if has_trajectory else "NULL AS early_trend_score"
+                trajectory_reasoning_select = "tc.trajectory_reasoning" if has_trajectory else "NULL AS trajectory_reasoning"
 
                 detect_query = """
                     SELECT
@@ -1284,7 +1290,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                             '[]'::json
                         ),
                         {novelty},
-                        {diversity}
+                        {diversity},
+                        {velocity},
+                        {acceleration},
+                        {direction},
+                        {early_trend},
+                        {trajectory_reasoning}
                     FROM trend_candidates tc
                     {source_join}
                     GROUP BY tc.id
@@ -1293,6 +1304,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 """.format(
                     novelty=novelty_select,
                     diversity=diversity_select,
+                    velocity=velocity_select,
+                    acceleration=acceleration_select,
+                    direction=direction_select,
+                    early_trend=early_trend_select,
+                    trajectory_reasoning=trajectory_reasoning_select,
                     source_join=(
                         """
                         LEFT JOIN trend_candidate_sources tcs ON tcs.trend_candidate_id = tc.id
@@ -1316,6 +1332,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         "sources": row[8] if isinstance(row[8], list) else [],
                         "novelty_score": round(float(row[9]), 4) if row[9] is not None else None,
                         "source_diversity": row[10] or 0,
+                        "velocity_score": round(float(row[11]), 4) if row[11] is not None else None,
+                        "acceleration_score": round(float(row[12]), 4) if row[12] is not None else None,
+                        "trajectory_direction": row[13] or "flat",
+                        "early_trend_score": round(float(row[14]), 4) if row[14] is not None else None,
+                        "trajectory_reasoning": row[15] or "",
                     }
                     for row in cur.fetchall()
                 ]

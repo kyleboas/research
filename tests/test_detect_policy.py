@@ -27,19 +27,19 @@ class DetectPolicyTests(unittest.TestCase):
 
     def test_source_diversity_penalizes_single_source_candidates(self):
         self.assertEqual(source_diversity_adjustment(1), -12)
-        self.assertEqual(source_diversity_adjustment(3), 6)
-        self.assertEqual(source_diversity_adjustment(6), 2)
+        self.assertEqual(source_diversity_adjustment(3), 3)  # few_sources_bonus
+        self.assertEqual(source_diversity_adjustment(6), 2)  # several_sources_bonus
         self.assertEqual(source_diversity_adjustment(12), -6)
 
     def test_compute_final_score_combines_all_signals(self):
         self.assertEqual(
             compute_final_score(
                 base_score=50,
-                novelty_score=0.7,
+                novelty_score=0.7,  # (0.7 - 0.5) * 30 = +6
                 feedback_adjustment=5,
-                source_diversity=3,
+                source_diversity=3,  # few_sources_bonus = +3
             ),
-            67,
+            64,  # 50 + 6 + 5 + 3 = 64
         )
 
     def test_report_gate_requires_score_and_source_support(self):

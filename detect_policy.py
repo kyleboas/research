@@ -15,6 +15,13 @@ DEFAULT_POLICY = {
     "several_sources_max": 8,
     "report_min_score": 45,
     "report_min_sources": 2,
+    # Trajectory-based early-trend detection
+    "early_trend_min_score": 0.5,
+    "early_trend_velocity_weight": 0.35,
+    "early_trend_acceleration_weight": 0.25,
+    "early_trend_novelty_weight": 0.4,
+    "trajectory_velocity_threshold": 0.5,
+    "trajectory_acceleration_threshold": 0.1,
 }
 
 _POLICY_ENV_VAR = "DETECT_POLICY_PATH"
