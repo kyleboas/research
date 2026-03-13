@@ -2,6 +2,7 @@ import unittest
 
 from autoresearch.report.benchmark_report import (
     estimate_report_llm_cost,
+    ensure_report_policy_runs_table,
     policy_changed,
     quality_per_dollar,
     report_policy_apply_decision,
@@ -9,6 +10,30 @@ from autoresearch.report.benchmark_report import (
 
 
 class ReportPolicyOptimizerTests(unittest.TestCase):
+    def test_ensure_report_policy_runs_table_backfills_budget_status_column(self):
+        executed = []
+
+        class FakeCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def execute(self, sql, params=None):
+                executed.append((sql, params))
+
+        class FakeConn:
+            def cursor(self):
+                return FakeCursor()
+
+        ensure_report_policy_runs_table(FakeConn())
+
+        normalized_sql = [" ".join(sql.split()) for sql, _params in executed]
+        self.assertTrue(
+            any("ALTER TABLE report_policy_runs ADD COLUMN IF NOT EXISTS budget_status TEXT NOT NULL DEFAULT ''" in sql for sql in normalized_sql)
+        )
+
     def test_policy_changed_detects_real_diff(self):
         base = {"max_research_rounds": 2, "subagent_search_limit": 24}
         candidate = {"max_research_rounds": 3, "subagent_search_limit": 24}

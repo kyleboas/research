@@ -246,6 +246,12 @@ def ensure_report_policy_runs_table(conn):
         )
         cur.execute(
             """
+            ALTER TABLE report_policy_runs
+            ADD COLUMN IF NOT EXISTS budget_status TEXT NOT NULL DEFAULT ''
+            """
+        )
+        cur.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_report_policy_runs_created_at
             ON report_policy_runs (created_at DESC)
             """
