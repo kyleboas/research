@@ -22,6 +22,7 @@ PORT = int(os.environ.get("PORT", 8080))
 RUN_COMMANDS = {
     "ingest": [sys.executable, str(ROOT / "main.py"), "--step", "ingest"],
     "detect": [sys.executable, str(ROOT / "main.py"), "--step", "detect"],
+    "rescore": [sys.executable, str(ROOT / "main.py"), "--step", "rescore"],
     "report": [sys.executable, str(ROOT / "main.py"), "--step", "report"],
     "detect_policy_eval": [sys.executable, str(ROOT / "autoresearch_detect" / "eval_detect.py")],
     "detect_policy_optimize": [
@@ -35,6 +36,7 @@ _run_lock = Lock()
 _step_runs = {
     "ingest": {"status": "idle", "started_at": None, "finished_at": None, "exit_code": None, "log_tail": ""},
     "detect": {"status": "idle", "started_at": None, "finished_at": None, "exit_code": None, "log_tail": ""},
+    "rescore": {"status": "idle", "started_at": None, "finished_at": None, "exit_code": None, "log_tail": ""},
     "report": {"status": "idle", "started_at": None, "finished_at": None, "exit_code": None, "log_tail": ""},
     "detect_policy_eval": {"status": "idle", "started_at": None, "finished_at": None, "exit_code": None, "log_tail": ""},
     "detect_policy_optimize": {"status": "idle", "started_at": None, "finished_at": None, "exit_code": None, "log_tail": ""},

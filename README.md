@@ -179,6 +179,7 @@ Run one step:
 python main.py --step ingest
 python main.py --step backfill
 python main.py --step detect
+python main.py --step rescore
 python main.py --step report
 ```
 
@@ -193,9 +194,11 @@ Notes:
 - default step is `ingest`.
 - `--step all` runs ingest + detect.
 - `--step backfill` reprocesses recent sources that are missing chunk embeddings.
+- `--step rescore` recomputes `novelty_score` and `final_score` for historical `trend_candidates` using the current novelty criteria.
 - add `--allow-report-after-detect` to include report generation in the same run.
 - `--backfill-days N` and `--backfill-limit N` control the backfill scan/reprocess window.
 - `--min-new-sources-for-detect N` skips detect when latest ingest added fewer than `N` sources.
+- `--rescore-limit N`, `--rescore-batch-size N`, and `--rescore-statuses a,b,c` control historical trend rescoring.
 
 ## Dashboard server
 
@@ -212,6 +215,7 @@ The dashboard can:
 - show ingest/detect/report records,
 - show run status and metrics,
 - trigger pipeline steps (`/api/run-step`),
+- rescore historical trend candidates with the current novelty logic,
 - record trend feedback (`/api/trend-feedback`).
 
 ## Detect-policy tuning loop

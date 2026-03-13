@@ -768,6 +768,7 @@
       const runLabels = {
         ingest: "ingest",
         detect: "detect",
+        rescore: "rescore historical trends",
         report: "report",
         detect_policy_eval: "detect policy eval",
         detect_policy_optimize: "detect policy optimize",
@@ -797,7 +798,7 @@
           { key: "report", label: "Next report" },
         ];
 
-        const runEntries = ["ingest", "detect", "report", "detect_policy_eval", "detect_policy_optimize"].map((name) => ({
+        const runEntries = ["ingest", "detect", "rescore", "report", "detect_policy_eval", "detect_policy_optimize"].map((name) => ({
           name,
           data: stepRuns?.[name] || { status: "idle" },
         }));
@@ -820,9 +821,9 @@
           .join("")}${runtimeCards}
           <section class="status-card">
             <p class="status-label">Manual runs</p>
-            <p class="status-subvalue">Run ingest, detect, report, a local detect-policy test, or an auto-tuning pass from the dashboard.</p>
+            <p class="status-subvalue">Run ingest, detect, rescore past trends, report, a local detect-policy test, or an auto-tuning pass from the dashboard.</p>
             <div class="run-controls">
-              ${["ingest", "detect", "report", "detect_policy_eval", "detect_policy_optimize"].map((step) => `<button class="run-step-btn" data-run-step="${step}" ${isAnyRunning ? "disabled" : ""}>${step === "detect_policy_eval" ? "Test detect policy" : step === "detect_policy_optimize" ? "Tune detect policy" : `Run ${step}`}</button>`).join("")}
+              ${["ingest", "detect", "rescore", "report", "detect_policy_eval", "detect_policy_optimize"].map((step) => `<button class="run-step-btn" data-run-step="${step}" ${isAnyRunning ? "disabled" : ""}>${step === "detect_policy_eval" ? "Test detect policy" : step === "detect_policy_optimize" ? "Tune detect policy" : step === "rescore" ? "Rescore past trends" : `Run ${step}`}</button>`).join("")}
             </div>
             ${runEntries.map((entry) => `
               <div class="step-run-block">

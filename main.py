@@ -65,6 +65,7 @@ def _validate_required_env(step: str):
         "ingest": common_required + ["NEWSBLUR_USERNAME", "NEWSBLUR_PASSWORD", "TRANSCRIPT_API_KEY"],
         "backfill": common_required,
         "detect": common_required,
+        "rescore": common_required,
         "report": common_required,
         "all": common_required + ["NEWSBLUR_USERNAME", "NEWSBLUR_PASSWORD", "TRANSCRIPT_API_KEY"],
     }
@@ -1305,6 +1306,33 @@ def upsert_trend_candidate(conn, candidate: dict, feedback_adjustment: int):
         )
         row = cur.fetchone()
         return row[0], int(row[1] or final_score), source_diversity
+
+
+def _effective_source_diversity(stored_source_diversity: int | None, linked_source_count: int | None) -> int:
+    return max(int(stored_source_diversity or 0), int(linked_source_count or 0))
+
+
+def _rescored_trend_candidate_values(
+    *,
+    base_score: int,
+    feedback_adjustment: int,
+    stored_source_diversity: int | None,
+    linked_source_count: int | None,
+    novelty_score: float | None,
+) -> tuple[int, int]:
+    source_diversity = _effective_source_diversity(stored_source_diversity, linked_source_count)
+    final_score = compute_final_score(
+        base_score=int(base_score),
+        novelty_score=novelty_score,
+        feedback_adjustment=int(feedback_adjustment or 0),
+        source_diversity=source_diversity,
+    )
+    return source_diversity, final_score
+
+
+def _parse_rescore_statuses(raw: str | None) -> list[str] | None:
+    statuses = [part.strip() for part in str(raw or "").split(",") if part.strip()]
+    return statuses or None
 
 # ══════════════════════════════════════════════
 # Hybrid retrieval (semantic + keyword via RRF)
@@ -2561,11 +2589,141 @@ def run_report(conn):
     conn.commit()
 
 
+def run_rescore(conn, *, limit: int = 0, batch_size: int = 100, statuses: list[str] | None = None):
+    query = """
+        SELECT
+            tc.id,
+            tc.trend,
+            tc.score,
+            tc.feedback_adjustment,
+            COALESCE(tc.source_diversity, 0) AS stored_source_diversity,
+            COUNT(tcs.source_id) AS linked_source_count,
+            tc.novelty_score,
+            COALESCE(tc.final_score, tc.score) AS existing_final_score,
+            tc.status
+        FROM trend_candidates tc
+        LEFT JOIN trend_candidate_sources tcs ON tcs.trend_candidate_id = tc.id
+    """
+    params = []
+    if statuses:
+        placeholders = ",".join(["%s"] * len(statuses))
+        query += f" WHERE tc.status IN ({placeholders})"
+        params.extend(statuses)
+    query += """
+        GROUP BY tc.id
+        ORDER BY tc.detected_at DESC, tc.id DESC
+    """
+    if limit and limit > 0:
+        query += " LIMIT %s"
+        params.append(int(limit))
+
+    with conn.cursor() as cur:
+        cur.execute(query, params)
+        rows = cur.fetchall()
+
+    if not rows:
+        log.info("Trend rescore skipped: no trend candidates matched the requested filters")
+        return 0
+
+    batch_size = max(1, int(batch_size or 1))
+    log.info(
+        "Trend rescore starting: %d candidates (statuses=%s, batch_size=%d)",
+        len(rows),
+        ",".join(statuses) if statuses else "all",
+        batch_size,
+    )
+
+    processed = 0
+    changed = 0
+    skipped = 0
+    for start in range(0, len(rows), batch_size):
+        batch = rows[start:start + batch_size]
+        vectors = embed([row[1] for row in batch])
+        if not vectors:
+            log.error("Trend rescore aborted: embedding call failed for batch starting at offset %d", start)
+            raise SystemExit(1)
+
+        updates = []
+        for row, vec in zip(batch, vectors):
+            candidate_id, trend, base_score, feedback_adjustment, stored_source_diversity, linked_source_count, existing_novelty, existing_final_score, status = row
+            if not vec:
+                skipped += 1
+                log.warning("Trend rescore skipped candidate_id=%s because embedding was unavailable", candidate_id)
+                continue
+
+            source_diversity = _effective_source_diversity(stored_source_diversity, linked_source_count)
+            novelty_score = compute_novelty_score(conn, trend, vec, source_count=source_diversity)
+            source_diversity, final_score = _rescored_trend_candidate_values(
+                base_score=base_score,
+                feedback_adjustment=feedback_adjustment,
+                stored_source_diversity=stored_source_diversity,
+                linked_source_count=linked_source_count,
+                novelty_score=novelty_score,
+            )
+            updates.append(
+                (
+                    candidate_id,
+                    novelty_score,
+                    final_score,
+                    source_diversity,
+                    existing_novelty,
+                    int(existing_final_score or base_score),
+                    int(stored_source_diversity or 0),
+                    status,
+                )
+            )
+
+        with conn.cursor() as cur:
+            for candidate_id, novelty_score, final_score, source_diversity, existing_novelty, existing_final_score, stored_source_diversity, status in updates:
+                cur.execute(
+                    """
+                    UPDATE trend_candidates
+                    SET novelty_score = %s,
+                        final_score = %s,
+                        source_diversity = %s
+                    WHERE id = %s
+                    """,
+                    (novelty_score, final_score, source_diversity, candidate_id),
+                )
+                processed += 1
+                if (
+                    existing_novelty is None
+                    or abs(float(existing_novelty) - float(novelty_score)) > 1e-6
+                    or int(existing_final_score) != int(final_score)
+                    or int(stored_source_diversity) != int(source_diversity)
+                ):
+                    changed += 1
+                log.debug(
+                    "Rescored trend_candidate id=%s status=%s final_score=%s novelty=%.4f source_diversity=%s",
+                    candidate_id,
+                    status,
+                    final_score,
+                    novelty_score,
+                    source_diversity,
+                )
+        conn.commit()
+        log.info(
+            "Trend rescore progress: %d/%d processed (%d changed, %d skipped)",
+            min(start + len(batch), len(rows)),
+            len(rows),
+            changed,
+            skipped,
+        )
+
+    log.info(
+        "Trend rescore complete: %d processed, %d changed, %d skipped",
+        processed,
+        changed,
+        skipped,
+    )
+    return processed
+
+
 def main():
     parser = argparse.ArgumentParser(description="Football research pipeline")
     parser.add_argument(
         "--step",
-        choices=["ingest", "backfill", "detect", "report", "all"],
+        choices=["ingest", "backfill", "detect", "rescore", "report", "all"],
         default="ingest",
         help="Pipeline step to run (default: ingest)",
     )
@@ -2586,6 +2744,23 @@ def main():
         type=int,
         default=0,
         help="Skip detect when latest ingest inserted fewer than this many new sources (default: 0)",
+    )
+    parser.add_argument(
+        "--rescore-limit",
+        type=int,
+        default=0,
+        help="Maximum number of historical trend candidates to rescore (default: 0 = all matches)",
+    )
+    parser.add_argument(
+        "--rescore-batch-size",
+        type=int,
+        default=100,
+        help="Batch size for embedding/rescoring historical trend candidates (default: 100)",
+    )
+    parser.add_argument(
+        "--rescore-statuses",
+        default="",
+        help="Comma-separated trend_candidate statuses to rescore (default: all statuses)",
     )
     parser.add_argument(
         "--allow-report-after-detect",
@@ -2609,6 +2784,13 @@ def main():
                 min_new_sources=args.min_new_sources_for_detect,
                 backfill_days=args.backfill_days,
                 backfill_limit=args.backfill_limit,
+            )
+        elif args.step == "rescore":
+            run_rescore(
+                conn,
+                limit=args.rescore_limit,
+                batch_size=args.rescore_batch_size,
+                statuses=_parse_rescore_statuses(args.rescore_statuses),
             )
         elif args.step == "report":
             run_report(conn)

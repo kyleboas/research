@@ -1,6 +1,9 @@
 import unittest
 
 from main import (
+    _effective_source_diversity,
+    _parse_rescore_statuses,
+    _rescored_trend_candidate_values,
     build_source_dedupe_values,
     canonicalize_url,
     normalize_text_for_hash,
@@ -116,6 +119,29 @@ class PipelineHelperTests(unittest.TestCase):
         self.assertEqual(source_diversity, 2)
         executed = conn.cursors[0].executed
         self.assertIn("INSERT INTO trend_candidates", executed[1][0])
+
+    def test_effective_source_diversity_prefers_linked_count_when_higher(self):
+        self.assertEqual(_effective_source_diversity(2, 5), 5)
+        self.assertEqual(_effective_source_diversity(4, 1), 4)
+
+    def test_rescored_trend_candidate_values_recompute_final_score(self):
+        source_diversity, final_score = _rescored_trend_candidate_values(
+            base_score=60,
+            feedback_adjustment=3,
+            stored_source_diversity=1,
+            linked_source_count=3,
+            novelty_score=0.7,
+        )
+
+        self.assertEqual(source_diversity, 3)
+        self.assertEqual(final_score, 75)
+
+    def test_parse_rescore_statuses_handles_empty_and_csv_values(self):
+        self.assertIsNone(_parse_rescore_statuses(""))
+        self.assertEqual(
+            _parse_rescore_statuses("pending, needs_more_evidence ,reported"),
+            ["pending", "needs_more_evidence", "reported"],
+        )
 
 
 if __name__ == "__main__":
