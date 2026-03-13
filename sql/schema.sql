@@ -51,6 +51,24 @@ CREATE TABLE IF NOT EXISTS reports (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS report_policy_runs (
+    id BIGSERIAL PRIMARY KEY,
+    fixture_path TEXT NOT NULL,
+    topic_count INT NOT NULL DEFAULT 0,
+    topics JSONB NOT NULL DEFAULT '[]'::jsonb,
+    baseline_score DOUBLE PRECISION NOT NULL,
+    best_score DOUBLE PRECISION NOT NULL,
+    delta DOUBLE PRECISION NOT NULL,
+    min_improvement DOUBLE PRECISION NOT NULL DEFAULT 0,
+    applied BOOLEAN NOT NULL DEFAULT FALSE,
+    apply_decision TEXT NOT NULL DEFAULT '',
+    policy_changed BOOLEAN NOT NULL DEFAULT FALSE,
+    baseline_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+    best_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+    topic_scores JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS pipeline_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT '',
@@ -140,6 +158,7 @@ CREATE INDEX IF NOT EXISTS idx_trend_candidates_status_score ON trend_candidates
 CREATE INDEX IF NOT EXISTS idx_trend_candidates_final_score ON trend_candidates (COALESCE(final_score, score) DESC, detected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trend_candidates_fingerprint ON trend_candidates (trend_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_trend_feedback_created_at ON trend_feedback (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_report_policy_runs_created_at ON report_policy_runs (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX IF NOT EXISTS idx_chunks_tsv ON chunks USING GIN (search_tsv);
 CREATE INDEX IF NOT EXISTS idx_sources_tsv ON sources USING GIN (search_tsv);
