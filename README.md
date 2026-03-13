@@ -16,6 +16,7 @@ The core pipeline lives in `main.py`, with a lightweight dashboard/runner in `se
 - Pulls recent videos from configured YouTube channels via channel RSS feeds.
 - Fetches transcripts from TranscriptAPI for discovered videos.
 - Runs optional full-text extraction for short RSS bodies (`article_extractor.py`).
+- Re-reads a configurable overlap window on incremental runs so late-arriving RSS stories or videos are deduped instead of missed.
 - Chunks content and stores embeddings in Postgres (`source_chunks.embedding`).
 
 ### 2) Detect (`--step detect`)
@@ -135,6 +136,11 @@ Required environment variables (see `env.example`):
 - `TRANSCRIPT_API_KEY`
 - database connection (`DATABASE_URL` or Railway-style `PG*` variables)
 
+Optional ingest safety knobs:
+
+- `RSS_OVERLAP_SECONDS` (default `172800`) adds a 48-hour overlap to incremental RSS fetches.
+- `YOUTUBE_OVERLAP_SECONDS` (default `172800`) adds a 48-hour overlap to per-channel YouTube publication watermarks.
+
 Model selection defaults come from `config.json` and can be overridden via env vars (`MODEL`, `LEAD_MODEL`, `EMBED_MODEL`, etc.). Use exact provider-prefixed model IDs in `config.json` and env vars; the app no longer rewrites alias model names at runtime.
 
 Cloudflare AI Gateway note:
@@ -170,6 +176,7 @@ Channel Name: https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 The ingest step normalizes YouTube sources to canonical `/channel/UC...` URLs.
+It now resolves non-canonical YouTube source URLs at ingest time without rewriting `feeds/youtube.md`.
 
 ## CLI usage
 

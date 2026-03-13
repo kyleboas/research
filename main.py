@@ -8,7 +8,7 @@ Architecture mirrors Anthropic's production research system:
 
 import argparse, hashlib, json, logging, math, os, platform, random, re, socket, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Optional
@@ -34,6 +34,8 @@ load_dotenv(ROOT / ".env")
 TRANSCRIPT_KEY = os.environ.get("TRANSCRIPT_API_KEY", "")
 NEWSBLUR_USERNAME = os.environ.get("NEWSBLUR_USERNAME", "")
 NEWSBLUR_PASSWORD = os.environ.get("NEWSBLUR_PASSWORD", "")
+RSS_OVERLAP_SECONDS = max(0, int(os.environ.get("RSS_OVERLAP_SECONDS", str(48 * 60 * 60))))
+YOUTUBE_OVERLAP_SECONDS = max(0, int(os.environ.get("YOUTUBE_OVERLAP_SECONDS", str(48 * 60 * 60))))
 
 # ── Cloudflare AI Gateway ──────────────────────────────────────────────────────
 CLOUDFLARE_GATEWAY_URL = os.environ.get("CLOUDFLARE_GATEWAY_URL", "")
@@ -364,7 +366,11 @@ def parse_youtube(path):
         if match:
             name = match.group(1).strip()
             channel_source = match.group(2).strip()
-            channel_id = _extract_uc_channel_id(channel_source)
+            try:
+                channel_id = _resolve_uc_channel_id(channel_source)
+            except Exception as e:
+                log.warning("YouTube config line could not be resolved: %s (%s)", raw_line, e)
+                continue
             if channel_id:
                 pairs.append((name, channel_id))
             else:
@@ -381,6 +387,29 @@ def parse_youtube(path):
 
 def strip_html(html):
     return re.sub(r"<[^>]+>", "", html).strip()
+
+
+def _parse_iso_datetime(raw: str | None) -> datetime | None:
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def _compute_overlap_watermark(raw: str | None, overlap_seconds: int) -> datetime | None:
+    dt = _parse_iso_datetime(raw)
+    if dt is None:
+        return None
+    return dt - timedelta(seconds=max(0, int(overlap_seconds or 0)))
+
+
+def _youtube_channel_state_key(channel_id: str) -> str:
+    return f"youtube_channel_last_published_at:{channel_id}"
 
 
 TRACKING_QUERY_PREFIXES = ("utm_", "fbclid", "gclid", "mc_", "ref", "source")
@@ -488,20 +517,17 @@ def fetch_newsblur(since_ts=None):
         rss_content = strip_html(story.get("story_content") or story.get("story_summary") or "")
         story_id = str(story.get("id") or url).strip()
         feed_id = str(story.get("story_feed_id") or "").strip()
-        if not rss_content:
-            continue
-
-        # Full-text extraction: if RSS content is short, fetch the real article
         content = rss_content
         author = None
         publish_date = None
         sitename = None
         extraction_method = "rss"
 
-        if should_extract(url, rss_content):
+        should_attempt_extraction = bool(url) and (not rss_content or should_extract(url, rss_content))
+        if should_attempt_extraction:
             try:
                 article = extract_article(url, fallback_content=rss_content)
-                if len(article["content"]) > len(rss_content):
+                if len(article["content"]) > len(content):
                     content = article["content"]
                     extraction_method = article["extraction_method"]
                     log.info("Full-text extraction improved %s: %d→%d chars (%s)",
@@ -513,6 +539,9 @@ def fetch_newsblur(since_ts=None):
                     title = article["title"]
             except Exception as e:
                 log.debug("Full-text extraction failed for %s: %s", url, e)
+
+        if not content:
+            continue
 
         items.append({
             "title": title,
@@ -673,7 +702,7 @@ def _transcriptapi_get(path, params):
             raise
 
 
-def _youtube_rss_latest_videos(channel_id, limit=10):
+def _youtube_rss_latest_videos(channel_id, limit=None):
     feed_url = f"{YOUTUBE_RSS_BASE_URL}?{urlencode({'channel_id': channel_id})}"
     req = Request(feed_url, headers={"User-Agent": YOUTUBE_RSS_USER_AGENT})
     with urlopen(req, timeout=30) as response:
@@ -690,12 +719,13 @@ def _youtube_rss_latest_videos(channel_id, limit=10):
         if not video_id:
             continue
         title = (entry.findtext("atom:title", default="", namespaces=ns) or "").strip()
+        published_at = (entry.findtext("atom:published", default="", namespaces=ns) or "").strip()
         link = ""
         link_node = entry.find("atom:link", ns)
         if link_node is not None:
             link = str(link_node.attrib.get("href") or "").strip()
-        videos.append({"id": video_id, "title": title, "url": link})
-        if len(videos) >= limit:
+        videos.append({"id": video_id, "title": title, "url": link, "published_at": published_at})
+        if limit is not None and len(videos) >= limit:
             break
     return videos
 
@@ -745,16 +775,17 @@ def _resolve_uc_channel_id(source):
 
 def normalize_youtube_source_config(path):
     text = path.read_text()
-    normalized_lines = []
+    rewritten_lines = []
     changed = False
 
-    # Preferred simple format: "Name: https://www.youtube.com/channel/UC..."
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or line.startswith(">"):
+            rewritten_lines.append(raw_line)
             continue
         match = re.match(r"^(.+?):\s*(https?://\S+)$", line)
         if not match:
+            rewritten_lines.append(raw_line)
             continue
         name = match.group(1).strip()
         source = match.group(2).strip()
@@ -762,27 +793,29 @@ def normalize_youtube_source_config(path):
             canonical_id = _resolve_uc_channel_id(source)
         except Exception as e:
             log.warning("YouTube source normalization failed for source=%s: %s", source, e)
+            rewritten_lines.append(raw_line)
             continue
         canonical_line = f"{name}: https://www.youtube.com/channel/{canonical_id}"
-        normalized_lines.append(canonical_line)
+        rewritten_lines.append(canonical_line)
         if canonical_line != line:
             changed = True
 
-    if not normalized_lines:
+    if not any(line.strip() for line in rewritten_lines):
         # Backward compatibility: parse old list format and rewrite.
         names = [m.group(1) for m in re.finditer(r"^-\s+\*\*(.+?)\*\*", text, re.M)]
         sources = [m.group(1) for m in re.finditer(r"^\s+-\s+(?:Canonical\s+)?Channel ID:\s*(\S+)", text, re.M)]
+        rewritten_lines = []
         for name, source in zip(names, sources):
             try:
                 canonical_id = _resolve_uc_channel_id(source)
             except Exception as e:
                 log.warning("YouTube source normalization failed for source=%s: %s", source, e)
                 continue
-            normalized_lines.append(f"{name}: https://www.youtube.com/channel/{canonical_id}")
-        changed = bool(normalized_lines)
+            rewritten_lines.append(f"{name}: https://www.youtube.com/channel/{canonical_id}")
+        changed = bool(rewritten_lines)
 
-    if changed and normalized_lines:
-        path.write_text("\n\n".join(normalized_lines) + "\n")
+    if changed and rewritten_lines:
+        path.write_text("\n".join(rewritten_lines).rstrip() + "\n")
         log.info("Normalized YouTube source config to canonical UC channel URLs: %s", path)
 
 
@@ -813,7 +846,7 @@ def _video_title(video):
     return ""
 
 
-def fetch_youtube(name, channel_id):
+def fetch_youtube(name, channel_id, published_after=None):
     counters = {
         "youtube_discovery_successes": 0,
         "youtube_discovery_hard_denies": 0,
@@ -861,7 +894,13 @@ def fetch_youtube(name, channel_id):
         )
 
     items = []
+    latest_published_at = None
     for video in videos:
+        video_published_at = _parse_iso_datetime(video.get("published_at"))
+        if video_published_at and (latest_published_at is None or video_published_at > latest_published_at):
+            latest_published_at = video_published_at
+        if published_after and video_published_at and video_published_at <= published_after:
+            continue
         vid = _video_id(video)
         if not vid:
             continue
@@ -897,9 +936,10 @@ def fetch_youtube(name, channel_id):
                     "url": f"https://www.youtube.com/watch?v={vid}",
                     "content": transcript.strip(),
                     "key": f"yt:{resolved_channel_id}:{vid}",
+                    "published_at": video.get("published_at"),
                 }
             )
-    return items, False, counters
+    return items, False, counters, latest_published_at
 
 # ══════════════════════════════════════════════
 # Storage & embedding
@@ -2373,16 +2413,20 @@ def run_ingest(conn):
         "youtube_transcript_failures": 0,
     }
 
-    normalize_youtube_source_config(ROOT / "feeds" / "youtube.md")
-
-    # Determine since_ts so NewsBlur only returns stories newer than the last run.
+    # Determine since_ts with an overlap window so late-arriving stories are re-checked.
     since_ts = None
     last_completed = load_state(conn, "last_ingest_completed_at")
     if last_completed:
         try:
-            dt = datetime.fromisoformat(last_completed)
-            since_ts = dt.timestamp()
-            log.info("Fetching NewsBlur stories newer_than=%s (%s)", int(since_ts), last_completed)
+            watermark = _compute_overlap_watermark(last_completed, RSS_OVERLAP_SECONDS)
+            if watermark is not None:
+                since_ts = watermark.timestamp()
+                log.info(
+                    "Fetching NewsBlur stories newer_than=%s (last_completed=%s overlap=%ss)",
+                    int(since_ts),
+                    last_completed,
+                    RSS_OVERLAP_SECONDS,
+                )
         except Exception as e:
             log.warning("Could not parse last_ingest_completed_at %r: %s — fetching all stories", last_completed, e)
 
@@ -2406,12 +2450,20 @@ def run_ingest(conn):
             log.info("Ingest decision=skipped source_type=rss dedupe_key=%s canonical_url=%s", dedupe_key, canonical_url)
 
     for name, cid in parse_youtube(ROOT / "feeds" / "youtube.md"):
-        yt_items, discovery_failed, counters = fetch_youtube(name, cid)
+        youtube_state_key = _youtube_channel_state_key(cid)
+        last_published_raw = load_state(conn, youtube_state_key)
+        published_after = None
+        try:
+            published_after = _compute_overlap_watermark(last_published_raw, YOUTUBE_OVERLAP_SECONDS)
+        except Exception as e:
+            log.warning("Could not parse %s=%r: %s — fetching full channel feed", youtube_state_key, last_published_raw, e)
+        yt_items, discovery_failed, counters, _latest_published_at = fetch_youtube(name, cid, published_after=published_after)
         for key, value in counters.items():
             youtube_counters[key] += value
         if discovery_failed:
             youtube_discovery_failures += 1
             continue
+        max_processed_published_at = None
         for item in yt_items:
             candidates_found += 1
             item.update(build_source_dedupe_values(item))
@@ -2423,12 +2475,20 @@ def run_ingest(conn):
                 log.info("Ingest decision=new source_type=youtube dedupe_key=%s canonical_url=%s", dedupe_key, canonical_url)
                 chunk_and_embed(conn, sid, item["content"])
                 new += 1
+                item_published_at = _parse_iso_datetime(item.get("published_at"))
+                if item_published_at and (max_processed_published_at is None or item_published_at > max_processed_published_at):
+                    max_processed_published_at = item_published_at
             elif existing_reason:
                 duplicates += 1
                 log.info("Ingest decision=duplicate source_type=youtube dedupe_key=%s canonical_url=%s duplicate_by=%s", dedupe_key, canonical_url, existing_reason)
+                item_published_at = _parse_iso_datetime(item.get("published_at"))
+                if item_published_at and (max_processed_published_at is None or item_published_at > max_processed_published_at):
+                    max_processed_published_at = item_published_at
             else:
                 skipped += 1
                 log.info("Ingest decision=skipped source_type=youtube dedupe_key=%s canonical_url=%s", dedupe_key, canonical_url)
+        if max_processed_published_at is not None:
+            save_state(conn, youtube_state_key, max_processed_published_at.isoformat())
 
     save_state(conn, "last_ingest_new_sources", str(new))
     save_state(conn, "last_ingest_completed_at", datetime.now(UTC).isoformat())
