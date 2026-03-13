@@ -74,16 +74,6 @@ ALTER TABLE trend_candidates
 
 DO $$
 BEGIN
-    UPDATE trend_candidates
-    SET status = 'needs_more_evidence'
-    WHERE status = 'skipped';
-EXCEPTION
-    WHEN undefined_table THEN
-        NULL;
-END $$;
-
-DO $$
-BEGIN
     IF EXISTS (
         SELECT 1
         FROM pg_constraint
@@ -110,6 +100,16 @@ BEGIN
     LOOP
         EXECUTE format('ALTER TABLE trend_candidates DROP CONSTRAINT %I', constraint_name);
     END LOOP;
+EXCEPTION
+    WHEN undefined_table THEN
+        NULL;
+END $$;
+
+DO $$
+BEGIN
+    UPDATE trend_candidates
+    SET status = 'needs_more_evidence'
+    WHERE status = 'skipped';
 EXCEPTION
     WHEN undefined_table THEN
         NULL;
