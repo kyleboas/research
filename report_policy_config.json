@@ -1,0 +1,12 @@
+{
+  "max_research_rounds": 2,
+  "simple_default_rounds": 2,
+  "moderate_default_rounds": 3,
+  "complex_default_rounds": 5,
+  "moderate_min_tasks": 3,
+  "complex_min_tasks": 5,
+  "subagent_search_limit": 24,
+  "subagent_max_tokens": 7000,
+  "synthesis_max_tokens": 16000,
+  "revision_max_tokens": 16000
+}

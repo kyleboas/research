@@ -17,11 +17,13 @@ This file is a fast orientation pass for coding agents.
 - `detect_policy.py`: score policy and report gate math.
 - `article_extractor.py`: full-text extraction helper for RSS articles.
 - `db_conn.py`: database connection resolution.
+- `report_policy.py`: report-stage tuning knobs loaded from `report_policy_config.json`.
 
 ## Operational Files
 
 - `env.example`: required env vars and runtime knobs.
 - `config.json`: model and pipeline config defaults.
+- `report_policy_config.json`: report-stage retrieval / effort policy.
 - `railway.toml`: Railway deployment config.
 - `sql/schema.sql`: primary schema and production migration path.
 - `sql/migrate_multilang.sql`: older upgrade path for multilingual support.
@@ -68,6 +70,7 @@ If that area is refactored later, do it as a separate boundary change. Do not mi
 - `tests/test_detect_evaluator.py`: detect eval metrics behavior.
 
 Offline eval tooling lives in `autoresearch_detect/`.
+Report-quality eval and benchmark tooling lives in `autoresearch_report/`.
 
 ## Common Change Paths
 

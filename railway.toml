@@ -32,6 +32,13 @@ builder = "nixpacks"
 # Optional per-service extra CLI flags:
 #   PIPELINE_FLAGS            --min-new-sources-for-detect=5   (detect service example)
 #
+# Optional manual/cron quality jobs you can also run from this same repo:
+#   - report quality eval: python autoresearch_report/eval_report.py --refresh-auto
+#   - report policy benchmark: python autoresearch_report/benchmark_report.py --refresh-auto --limit 3
+#   - report policy optimize: python autoresearch_report/optimize_report_policy.py --refresh-auto --limit 3
+#   - detect policy eval:  python autoresearch_detect/eval_detect.py
+#   - detect policy tune:  python autoresearch_detect/optimize_detect_policy.py --refresh-auto --apply
+#
 # Avoid --step all in production. If you intentionally need full same-process
 # execution, set PIPELINE_STEP=all and PIPELINE_FLAGS=--allow-report-after-detect.
 #

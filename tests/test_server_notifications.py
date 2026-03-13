@@ -4,8 +4,13 @@ from server import (
     _format_detect_candidates_notification,
     _format_eval_notification,
     _format_optimize_notification,
+    _format_report_benchmark_notification,
+    _format_report_eval_notification,
+    _format_report_optimize_notification,
     _parse_eval_summary,
     _parse_optimize_summary,
+    _parse_report_benchmark_summary,
+    _parse_report_eval_summary,
 )
 
 
@@ -83,6 +88,93 @@ class ServerNotificationTests(unittest.TestCase):
         self.assertIn("Detect policy optimize finished.", message)
         self.assertIn("Score: 88.50 -> 92.50", message)
         self.assertIn("Delta: +4.00", message)
+        self.assertIn("Policy changed: yes", message)
+
+    def test_parse_report_eval_summary_extracts_scores(self):
+        summary = _parse_report_eval_summary(
+            "\n".join(
+                [
+                    "fixture=/tmp/reports.json",
+                    "policy=/tmp/report_policy_config.json",
+                    "average_item_score=78.25",
+                    "section_coverage=0.8750",
+                    "citation_validity=0.9500",
+                    "citation_density=0.7000",
+                    "source_diversity=0.6667",
+                    "sources_section_coverage=0.8000",
+                    "counterevidence_coverage=0.5000",
+                    "thoroughness=0.7200",
+                    "FINAL_SCORE=78.25",
+                ]
+            )
+        )
+
+        self.assertEqual(summary["fixture"], "/tmp/reports.json")
+        self.assertEqual(summary["policy"], "/tmp/report_policy_config.json")
+        self.assertEqual(summary["average_item_score"], 78.25)
+        self.assertEqual(summary["section_coverage"], 0.875)
+        self.assertEqual(summary["citation_validity"], 0.95)
+        self.assertEqual(summary["final_score"], 78.25)
+
+    def test_format_report_eval_notification_is_concise(self):
+        message = _format_report_eval_notification(
+            {
+                "average_item_score": 78.25,
+                "section_coverage": 0.875,
+                "citation_validity": 0.95,
+                "thoroughness": 0.72,
+                "final_score": 78.25,
+            }
+        )
+
+        self.assertIn("Report quality eval finished.", message)
+        self.assertIn("Final score: 78.25", message)
+        self.assertIn("Average item score: 78.25", message)
+        self.assertIn("Citation validity: 0.9500", message)
+        self.assertIn("Section coverage: 0.8750", message)
+        self.assertIn("Thoroughness: 0.7200", message)
+
+    def test_parse_report_benchmark_summary_extracts_delta_and_policy(self):
+        summary = _parse_report_benchmark_summary(
+            "\n".join(
+                [
+                    "fixture=/tmp/reports.json",
+                    "policy_path=/tmp/report_policy_config.json",
+                    "baseline=78.25",
+                    "best=82.50",
+                    "delta=4.25",
+                    'best_policy={"max_research_rounds": 3, "subagent_search_limit": 30}',
+                ]
+            )
+        )
+
+        self.assertEqual(summary["fixture"], "/tmp/reports.json")
+        self.assertEqual(summary["policy_path"], "/tmp/report_policy_config.json")
+        self.assertEqual(summary["baseline"], 78.25)
+        self.assertEqual(summary["best"], 82.5)
+        self.assertEqual(summary["delta"], 4.25)
+        self.assertEqual(summary["best_policy"]["max_research_rounds"], 3)
+
+    def test_format_report_benchmark_notification_reports_policy_change(self):
+        message = _format_report_benchmark_notification(
+            {"baseline": 78.25, "best": 82.5, "delta": 4.25},
+            policy_changed=True,
+        )
+
+        self.assertIn("Report policy benchmark finished.", message)
+        self.assertIn("Score: 78.25 -> 82.50", message)
+        self.assertIn("Delta: +4.25", message)
+        self.assertIn("Policy changed: yes", message)
+
+    def test_format_report_optimize_notification_reports_policy_change(self):
+        message = _format_report_optimize_notification(
+            {"baseline": 78.25, "best": 82.5, "delta": 4.25},
+            policy_changed=True,
+        )
+
+        self.assertIn("Report policy optimize finished.", message)
+        self.assertIn("Score: 78.25 -> 82.50", message)
+        self.assertIn("Delta: +4.25", message)
         self.assertIn("Policy changed: yes", message)
 
     def test_format_detect_candidates_notification_limits_lines(self):

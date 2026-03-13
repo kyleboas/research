@@ -45,6 +45,7 @@ from trend_detection import run_bertrend_detection, describe_signals_with_llm
 from article_extractor import extract_article, should_extract
 from tactical_extraction import chunk_with_context, extract_tactical_patterns, extract_tactical_context
 from novelty_scoring import update_baseline
+from report_policy import load_policy as load_report_policy
 
 log = logging.getLogger("research")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -71,6 +72,15 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 # ── Config file (config.json) overrides env-var model defaults ────────────────
 _cfg_path = ROOT / "config.json"
 _CFG: dict = json.loads(_cfg_path.read_text()) if _cfg_path.exists() else {}
+REPORT_POLICY = load_report_policy()
+MAX_RESEARCH_ROUNDS = int(REPORT_POLICY["max_research_rounds"])
+
+
+def set_report_policy(overrides: dict | None = None) -> dict:
+    global REPORT_POLICY, MAX_RESEARCH_ROUNDS
+    REPORT_POLICY = load_report_policy(overrides)
+    MAX_RESEARCH_ROUNDS = int(REPORT_POLICY["max_research_rounds"])
+    return REPORT_POLICY
 
 LEAD_MODEL    = os.environ.get("LEAD_MODEL")    or _CFG.get("lead_model",    "anthropic/claude-sonnet-4-6")
 MODEL         = os.environ.get("MODEL")         or _CFG.get("model",         "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast")
@@ -311,6 +321,36 @@ def get_embed_client(model_name: str = _resolved_embed_model):
 
 
 CITATION_FMT = "Cite every claim as [S<source_id>:C<chunk_id>]. Never cite IDs not in the provided context."
+REPORT_QUALITY_BAR = (
+    "Quality bar:\n"
+    "- Write like a top-tier analytical research memo, not a generic blog summary.\n"
+    "- Build a defensible thesis, then support it with mechanisms, chronology, comparisons, and counterevidence.\n"
+    "- Prefer fewer, sharper claims with dense support over broad but shallow coverage.\n"
+    "- Distinguish clearly between direct evidence, inference, and speculation.\n"
+    "- When sources disagree, explain the disagreement instead of flattening it away.\n"
+    "- Use citations aggressively: every non-obvious factual claim should be traceable to nearby evidence.\n"
+    "- Surface limitations honestly, including thin evidence, conflicting evidence, and unanswered questions."
+)
+REPORT_STRUCTURE_REQUIREMENTS = (
+    "Required report structure:\n"
+    "# [Descriptive Title]\n"
+    "## Executive Summary\n"
+    "State the bottom-line conclusion, why it matters, and the strongest supporting evidence.\n"
+    "## Key Findings\n"
+    "Numbered list of the most consequential findings, each with citations.\n"
+    "## Main Analysis\n"
+    "Use angle-specific H2 sections with H3 subsections where needed. Synthesize evidence across angles instead of merely restating subagent outputs.\n"
+    "## Counterevidence and Alternative Explanations\n"
+    "Describe where the evidence is mixed, incomplete, or plausibly explained another way.\n"
+    "## Evidence Assessment\n"
+    "Assess source quality, source diversity, recency, and any important blind spots.\n"
+    "## Implications\n"
+    "Explain what the evidence suggests for football tactics going forward.\n"
+    "## Open Questions\n"
+    "List the most important unresolved questions.\n"
+    "## Sources\n"
+    "List only sources actually cited in the report, with accurate titles and URLs."
+)
 
 # ── Static system prompts (extracted for prompt caching) ──────────────────────
 # Anthropic models cache repeated prompt prefixes automatically.
@@ -323,6 +363,8 @@ SYS_OODA_EVAL = (
     "OBSERVE: Review the chunks collected so far.\n"
     "ORIENT: Compare against the research objective — what's covered vs what's missing?\n"
     "DECIDE: Is evidence sufficient, or do we need another retrieval round?\n\n"
+    "Treat a memo as insufficient if it still lacks direct evidence for the core claim, "
+    "counterevidence, important chronology, or the strongest available specifics.\n"
     "If more retrieval is needed, generate a query that is NARROWER and MORE SPECIFIC "
     "than previous queries — do not repeat broad searches."
 )
@@ -330,13 +372,21 @@ SYS_OODA_EVAL = (
 SYS_SUBAGENT = (
     f"You are a focused research subagent. {CITATION_FMT}\n\n"
     "Stay strictly within your assigned boundaries. Do not speculate beyond "
-    "what the evidence supports. If evidence is thin, say so explicitly."
+    "what the evidence supports. If evidence is thin, say so explicitly.\n\n"
+    f"{REPORT_QUALITY_BAR}\n\n"
+    "Your deliverable is an evidence memo for a much larger final report. "
+    "Do not write vaguely. Triangulate across sources, identify disagreements, "
+    "and separate direct observation from interpretation."
 )
 
 SYS_SYNTHESIS = (
     f"You are a synthesis editor merging multiple subagent research outputs into "
     f"one coherent, publication-quality research report. {CITATION_FMT}\n\n"
-    "Always write the report in English, regardless of the language of the source material."
+    "Always write the report in English, regardless of the language of the source material.\n\n"
+    f"{REPORT_QUALITY_BAR}\n\n"
+    "The final piece should feel like a strong Claude deep-research report: "
+    "thesis-driven, richly evidenced, explicit about uncertainty, and willing "
+    "to spend words on mechanism and nuance when the evidence supports it."
 )
 
 SYS_CITATION = (
@@ -345,15 +395,19 @@ SYS_CITATION = (
     "1. Verify the source_id and chunk_id exist in the provided chunks\n"
     "2. Verify the cited claim is actually supported by that chunk's content\n"
     "3. Check for claims that SHOULD have citations but don't\n"
-    "4. Check for fabricated/hallucinated citation IDs\n\n"
-    "You must also verify the Sources section at the end lists accurate titles and URLs."
+    "4. Check for fabricated/hallucinated citation IDs\n"
+    "5. Check whether the claim is overstated relative to the cited chunk\n\n"
+    "You must also verify the Sources section at the end lists accurate titles and URLs.\n"
+    "Treat missing support, overclaiming, and misleading phrasing as citation errors."
 )
 
 SYS_REVISION = (
     f"You are a revision editor producing the final research report. {CITATION_FMT}\n\n"
     "You have received a citation verification report from the CitationAgent. "
     "Apply every directive precisely. The final report must have zero citation errors.\n\n"
-    "Always write the report in English, regardless of the language of the source material."
+    "Always write the report in English, regardless of the language of the source material.\n\n"
+    f"{REPORT_QUALITY_BAR}\n\n"
+    "Preserve analytical depth. Do not shorten the report unless you are removing unsupported or redundant material."
 )
 
 SYS_DECOMPOSE = (
@@ -365,6 +419,12 @@ SYS_DECOMPOSE = (
     "- an explicit output format\n"
     "- search guidance describing what evidence or sources to prioritize\n"
     "- boundaries that prevent duplication with other subagents\n\n"
+    "Your plan should create enough surface area for a genuinely deep report. "
+    "For moderate and complex topics, include dedicated coverage for:\n"
+    "- the core mechanism / why the trend is happening\n"
+    "- the strongest supporting evidence\n"
+    "- counterevidence, competing interpretations, or failure cases\n"
+    "- implications and remaining uncertainty\n\n"
     "EFFORT SCALING RULES:\n"
     "- Simple fact-finding: 1 subagent, 3-10 tool/search calls, max_rounds=2\n"
     "- Direct comparisons or moderate analysis: 2-4 subagents, 10-15 calls each, max_rounds=3\n"
@@ -376,7 +436,9 @@ SYS_SUFFICIENCY = (
     "You are the LeadResearcher evaluating whether the synthesized research is sufficient "
     "or whether additional subagent research rounds are needed.\n\n"
     "Be critical but pragmatic. Only request additional research if there are SPECIFIC, "
-    "ACTIONABLE gaps that more retrieval could realistically fill."
+    "ACTIONABLE gaps that more retrieval could realistically fill.\n\n"
+    "A report is not sufficient if it still lacks support for the core thesis, "
+    "fails to address plausible counterarguments, or relies on thin evidence for major claims."
 )
 
 # ══════════════════════════════════════════════
@@ -1871,7 +1933,12 @@ def _normalize_subagent_task(task, index: int, trend: str, complexity: str = "mo
     queries = [str(q).strip() for q in raw.get("search_queries", []) if str(q).strip()]
     if not queries:
         queries = [f"{trend} {angle}"]
-    default_rounds = {"simple": 2, "moderate": 3, "complex": 4}.get((complexity or "moderate").lower(), 3)
+    normalized_complexity = (complexity or "moderate").lower()
+    default_rounds = {
+        "simple": int(REPORT_POLICY["simple_default_rounds"]),
+        "moderate": int(REPORT_POLICY["moderate_default_rounds"]),
+        "complex": int(REPORT_POLICY["complex_default_rounds"]),
+    }.get(normalized_complexity, int(REPORT_POLICY["moderate_default_rounds"]))
     return {
         "task_order": index,
         "angle": angle,
@@ -1883,14 +1950,81 @@ def _normalize_subagent_task(task, index: int, trend: str, complexity: str = "mo
         ),
         "output_format": _normalize_text_field(
             raw.get("output_format"),
-            "Return a markdown brief with strongest finding first, cited key evidence, limitations, and unresolved questions.",
+            "Return a markdown brief with a direct answer, strongest evidence, mechanism, counterevidence, limitations, and unresolved questions.",
         ),
         "search_guidance": _normalize_text_field(
             raw.get("search_guidance"),
-            "Start broad, then narrow toward recent, contradictory, or especially concrete evidence.",
+            "Start broad, then narrow toward recent, contradictory, especially concrete, or especially explanatory evidence.",
         ),
         "max_rounds": _coerce_positive_int(raw.get("max_rounds"), default_rounds),
     }
+
+
+def _pad_subagent_tasks(tasks: list[dict], trend: str, complexity: str) -> list[dict]:
+    normalized_complexity = (complexity or "moderate").lower()
+    min_tasks = {
+        "simple": 1,
+        "moderate": int(REPORT_POLICY["moderate_min_tasks"]),
+        "complex": int(REPORT_POLICY["complex_min_tasks"]),
+    }.get(normalized_complexity, int(REPORT_POLICY["moderate_min_tasks"]))
+    if len(tasks) >= min_tasks:
+        return tasks
+
+    existing_angles = {str(task.get("angle", "")).strip().lower() for task in tasks}
+    fallback_specs = [
+        {
+            "angle": "Core evidence and mechanism",
+            "objective": f"Establish the strongest direct evidence for {trend} and explain the main tactical mechanism behind it.",
+            "search_queries": [trend, f"{trend} tactical mechanism", f"{trend} evidence examples"],
+            "boundaries": "Focus on proving and explaining the trend itself; do not spend much time on future implications.",
+            "output_format": "Return a memo centered on the core evidence, mechanism, and the most concrete examples.",
+            "search_guidance": "Prioritize concrete tactical descriptions, repeated match patterns, and source material that explains why the pattern works.",
+        },
+        {
+            "angle": "Counterevidence and failure cases",
+            "objective": f"Find the strongest evidence against {trend}, including cases where it failed, was overstated, or is better explained another way.",
+            "search_queries": [f"{trend} counterevidence", f"{trend} limitations", f"{trend} failure cases"],
+            "boundaries": "Focus on disagreement and limitations rather than re-arguing the main positive case.",
+            "output_format": "Return a memo that stresses disagreement, edge cases, and what would weaken the main thesis.",
+            "search_guidance": "Prioritize contradictory, skeptical, or qualification-heavy evidence.",
+        },
+        {
+            "angle": "Implications and tactical consequences",
+            "objective": f"Explain what {trend} changes in practice, who benefits, what adaptations it invites, and where it may go next.",
+            "search_queries": [f"{trend} implications", f"{trend} adaptations", f"{trend} future outlook"],
+            "boundaries": "Focus on practical implications and forward-looking tactical consequences, not on re-establishing the base evidence.",
+            "output_format": "Return a memo covering consequences, adaptations, and clearly marked uncertainty about what comes next.",
+            "search_guidance": "Prioritize analysis that connects evidence to practical coaching or match implications.",
+        },
+        {
+            "angle": "Concrete examples and comparison points",
+            "objective": f"Collect the clearest team, match, or player examples that illustrate {trend} and compare how it appears across contexts.",
+            "search_queries": [f"{trend} examples", f"{trend} team analysis", f"{trend} comparison"],
+            "boundaries": "Focus on concrete examples and comparisons rather than abstract theory.",
+            "output_format": "Return a memo built around examples, comparisons, and what those comparisons reveal.",
+            "search_guidance": "Prioritize evidence-rich examples with enough detail to compare contexts directly.",
+        },
+        {
+            "angle": "Historical context and adoption",
+            "objective": f"Place {trend} in context by showing how recent it is, what preceded it, and whether it looks early, growing, or already mainstream.",
+            "search_queries": [f"{trend} historical context", f"{trend} evolution", f"{trend} adoption"],
+            "boundaries": "Focus on timeline, context, and adoption rather than detailed tactical mechanics.",
+            "output_format": "Return a memo covering the timeline, precursors, and current adoption level of the trend.",
+            "search_guidance": "Prioritize evidence that helps establish chronology, diffusion, and whether the trend is actually new.",
+        },
+    ]
+
+    next_index = len(tasks) + 1
+    for spec in fallback_specs:
+        if len(tasks) >= min_tasks:
+            break
+        angle_key = spec["angle"].strip().lower()
+        if angle_key in existing_angles:
+            continue
+        tasks.append(_normalize_subagent_task(spec, next_index, trend, normalized_complexity))
+        existing_angles.add(angle_key)
+        next_index += 1
+    return tasks
 
 
 def _persist_lead_plan(conn, run_dir: Path, trend: str, plan: dict):
@@ -2014,7 +2148,9 @@ def decompose_topic(trend):
         "1. What is the complexity level of this topic?\n"
         "2. What are the distinct, non-overlapping research angles?\n"
         "3. What search queries would each angle need (broad first, then narrow)?\n"
-        "4. What boundaries prevent duplication between angles?\n\n"
+        "4. What boundaries prevent duplication between angles?\n"
+        "5. Which angle will handle counterevidence or alternative explanations?\n"
+        "6. Which angle will handle implications and unresolved uncertainty?\n\n"
         "Return JSON:\n"
         "```json\n"
         '{\n'
@@ -2052,6 +2188,7 @@ def decompose_topic(trend):
     tasks = [_normalize_subagent_task(task, index + 1, trend, complexity) for index, task in enumerate(raw_tasks)]
     if not tasks:
         tasks = [_normalize_subagent_task({}, 1, trend, complexity)]
+    tasks = _pad_subagent_tasks(tasks, trend, complexity)
     log.info("Lead agent: complexity=%s, %d angles: %s",
              complexity, len(tasks), [t.get("angle") for t in tasks])
     return {
@@ -2090,7 +2227,7 @@ def research_angle(conninfo, trend, task, run_dir: Path, research_round: int):
         for round_num in range(max_rounds):
             query = queries[round_num] if round_num < len(queries) else queries[-1]
             log.info("  Subagent '%s' round %d/%d: query='%s'", angle, round_num + 1, max_rounds, query[:60])
-            rows = hybrid_search(conn, query, limit=15)
+            rows = hybrid_search(conn, query, limit=int(REPORT_POLICY["subagent_search_limit"]))
             for record in chunk_rows_to_records(rows):
                 all_chunks[record["chunk_id"]] = record
 
@@ -2157,13 +2294,27 @@ def research_angle(conninfo, trend, task, run_dir: Path, research_round: int):
         f"Search guidance: {search_guidance}\n"
         f"Required output format: {output_format}\n\n"
         f"Evidence chunks:\n{chunk_json}\n\n"
-        "Write a thorough, evidence-grounded analysis for this angle:\n"
-        "- Lead with the strongest finding\n"
-        "- Use inline citations [S<source_id>:C<chunk_id>] on every claim\n"
+        "Write a thorough, evidence-grounded memo for this angle.\n\n"
+        "Required structure:\n"
+        "## Bottom Line\n"
+        "State the strongest supported conclusion for this angle.\n"
+        "## Evidence\n"
+        "Lay out the most important facts, comparisons, chronology, and mechanisms.\n"
+        "## Counterevidence / Alternative Interpretations\n"
+        "Explain disagreement, edge cases, or plausible alternative readings of the evidence.\n"
+        "## Confidence and Limitations\n"
+        "Assess how strong the evidence is and what remains thin.\n"
+        "## Unresolved Questions\n"
+        "List what further retrieval would still need to answer.\n\n"
+        "Requirements:\n"
+        "- Lead with the strongest finding, not background filler\n"
+        "- Use inline citations [S<source_id>:C<chunk_id>] on every non-obvious claim\n"
+        "- Prefer claims supported by multiple chunks when possible\n"
         "- Bold key statistics and figures\n"
-        "- Note evidence quality and any limitations\n"
+        "- Be explicit when a sentence is inference rather than direct evidence\n"
         "- Flag if evidence was insufficient for any part of the objective",
         model=SUMMARY_MODEL,
+        max_tokens=int(REPORT_POLICY["subagent_max_tokens"]),
     )
     _write_json(artifact_dir / "evidence.json", chunk_records)
     _write_text(artifact_dir / "summary.md", summary)
@@ -2260,32 +2411,21 @@ def synthesize(trend, subagent_results, run_dir: Path, research_round: int):
         f"All deduplicated evidence chunks ({len(all_chunks)} total):\n{chunk_json}\n\n"
         f"Failed angles (no evidence): {', '.join(failed) if failed else '(none)'}\n"
         f"Weak angles (<40% coverage): {', '.join(weak) if weak else '(none)'}\n\n"
-        "Produce a comprehensive markdown report:\n"
-        "# [Descriptive Title]\n\n"
-        "## Executive Summary\n"
-        "Concise overview of the trend, why it matters, and key findings.\n\n"
-        "## Key Findings\n"
-        "Numbered list of the most important findings with evidence.\n\n"
-        "## [Angle-specific H2 sections]\n"
-        "One H2 per research angle with H3 subsections where depth warrants it.\n"
-        "Cross-reference between angles where findings connect.\n\n"
-        "## Evidence Assessment\n"
-        "Overall quality, limitations, failed/weak angles acknowledged.\n\n"
-        "## Implications\n"
-        "What this means for football tactics going forward.\n\n"
-        "## Open Questions\n"
-        "What remains unknown or under-evidenced.\n\n"
-        "## Sources\n"
-        "All cited sources with titles and URLs.\n\n"
-        "Requirements:\n"
-        "- Every claim must have inline citation [S<source_id>:C<chunk_id>]\n"
-        "- **Bold** key statistics and figures\n"
-        "- Tables for structured comparisons where useful\n"
-        "- `---` separators between major sections\n"
+        "Produce a comprehensive markdown report.\n\n"
+        f"{REPORT_STRUCTURE_REQUIREMENTS}\n\n"
+        "Additional requirements:\n"
+        "- Aim for a genuinely thorough report when the evidence supports it; do not compress away nuance just to be brief\n"
+        "- Every non-obvious factual claim must have inline citation [S<source_id>:C<chunk_id>]\n"
+        "- Prefer paragraphs that synthesize multiple sources instead of one-source-at-a-time dumping\n"
+        "- Explain why the evidence matters, not just what it says\n"
+        "- Include chronology, mechanism, and comparison where those strengthen the argument\n"
+        "- Use tables for structured comparisons where useful\n"
+        "- Use `---` separators between major sections\n"
         "- Flag any speculation explicitly\n"
-        "- Acknowledge evidence gaps honestly",
+        "- Acknowledge evidence gaps honestly\n"
+        "- Do not include a source in the Sources section unless it is actually cited in the body",
         model=SYNTHESIS_MODEL,
-        max_tokens=12000,
+        max_tokens=int(REPORT_POLICY["synthesis_max_tokens"]),
     )
     round_dir = _round_dir(run_dir, research_round)
     _write_text(round_dir / "draft.md", draft)
@@ -2316,7 +2456,9 @@ def evaluate_sufficiency(trend, draft, subagent_results, chunk_json, run_dir: Pa
         "Evaluate:\n"
         "1. Are there critical evidence gaps that undermine the report's credibility?\n"
         "2. Are any angles so weak they need additional retrieval?\n"
-        "3. Did the draft reveal a NEW angle not in the original decomposition?\n\n"
+        "3. Did the draft reveal a NEW angle not in the original decomposition?\n"
+        "4. Does the draft meaningfully address counterevidence and alternative explanations?\n"
+        "5. Are any major claims under-cited or supported by only thin evidence?\n\n"
         "Return JSON:\n"
         '{"sufficient": true/false, "gaps": [{"angle": "...", "objective": "...", '
         '"search_queries": ["..."], "boundaries": "...", "max_rounds": 2}]}',
@@ -2397,21 +2539,15 @@ def revise(trend, draft, citation_report, chunk_json, run_dir: Path):
         "3. Remove or qualify claims where no supporting chunk exists\n"
         "4. Fix the Sources section to match actual citations\n"
         "5. Preserve all well-grounded claims and their citations\n"
-        "6. Maintain the full report structure:\n"
-        "   # Title\n"
-        "   ## Executive Summary\n"
-        "   ## Key Findings (numbered)\n"
-        "   ## [Angle-specific sections with H3 subsections]\n"
-        "   ## Evidence Assessment\n"
-        "   ## Implications\n"
-        "   ## Open Questions\n"
-        "   ## Sources\n"
-        "7. **Bold** key statistics, use tables where appropriate\n"
-        "8. Explicitly flag remaining speculation with qualifiers like "
+        f"6. Maintain this full structure:\n{REPORT_STRUCTURE_REQUIREMENTS}\n"
+        "7. Preserve analytical depth, nuance, chronology, and counterevidence where they are supported\n"
+        "8. **Bold** key statistics, use tables where appropriate\n"
+        "9. Explicitly flag remaining speculation with qualifiers like "
         "\"evidence suggests\" or \"it appears that\"\n"
-        "9. Use `---` separators between major sections",
+        "10. Use `---` separators between major sections\n"
+        "11. Do not leave placeholder headings or generic filler",
         model=REVISION_MODEL,
-        max_tokens=12000,
+        max_tokens=int(REPORT_POLICY["revision_max_tokens"]),
     )
     _write_text(run_dir / "final-report.md", final_report)
     return final_report
@@ -2420,9 +2556,14 @@ def revise(trend, draft, citation_report, chunk_json, run_dir: Path):
 # Orchestration: full multi-agent pipeline with re-planning
 # ══════════════════════════════════════════════
 
-MAX_RESEARCH_ROUNDS = 2  # max re-planning iterations
-
-def generate_report(conn, trend):
+def generate_report(
+    conn,
+    trend,
+    *,
+    persist_report: bool = True,
+    publish_to_github: bool = True,
+    write_local_post: bool = True,
+):
     """Full pipeline matching Anthropic's multi-agent research architecture.
 
     LeadResearcher (extended thinking, effort scaling)
@@ -2493,7 +2634,8 @@ def generate_report(conn, trend):
         category=report_category,
     )
     local_post_path = ROOT / github_post_path
-    _write_text(local_post_path, github_post_content)
+    if write_local_post:
+        _write_text(local_post_path, github_post_content)
 
     report_summary = _report_summary(final_report)
     github_url = ""
@@ -2502,7 +2644,7 @@ def generate_report(conn, trend):
     github_base_branch = GITHUB_BRANCH
     github_publish_error = ""
     discord_notify_error = ""
-    if GITHUB_TOKEN and GITHUB_REPO:
+    if publish_to_github and GITHUB_TOKEN and GITHUB_REPO:
         try:
             publish_result = _publish_report_post_to_github(
                 github_post_path,
@@ -2521,6 +2663,8 @@ def generate_report(conn, trend):
             github_publish_error = str(exc)
             log.error("GitHub report publish failed for %s: %s", github_post_path, exc, exc_info=True)
             raise
+    elif not publish_to_github:
+        github_publish_error = "github_publish_disabled"
     else:
         github_publish_error = "github_not_configured"
         log.warning(
@@ -2528,7 +2672,7 @@ def generate_report(conn, trend):
             github_post_path,
         )
 
-    metadata = json.dumps({
+    metadata_obj = {
         "complexity": complexity,
         "angles": [r["angle"] for r in all_subagent_results],
         "total_chunks": len(all_chunks),
@@ -2553,16 +2697,20 @@ def generate_report(conn, trend):
             "revision": REVISION_MODEL,
             "signal": SIGNAL_MODEL,
         },
-    })
-    with conn.cursor() as cur:
-        cur.execute("INSERT INTO reports (title, content, metadata) VALUES (%s, %s, %s::jsonb)",
-                    (trend, final_report, metadata))
-        conn.commit()
+        "report_policy": REPORT_POLICY,
+    }
+    if persist_report:
+        metadata = json.dumps(metadata_obj)
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO reports (title, content, metadata) VALUES (%s, %s, %s::jsonb)",
+                        (trend, final_report, metadata))
+            conn.commit()
 
     log.info(
-        "Report saved: %s github=%s (%d chunks, %d angles, %d rounds)",
-        local_post_path,
+        "Report generated: %s github=%s persist=%s (%d chunks, %d angles, %d rounds)",
+        local_post_path if write_local_post else "(local write skipped)",
         github_url or "not_published",
+        persist_report,
         len(all_chunks),
         len(all_subagent_results),
         research_round + 1,

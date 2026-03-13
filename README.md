@@ -60,6 +60,11 @@ The report stage selects top pending candidates that pass quality gates and then
 - final revision,
 - persistent report artifacts (lead plan, subagent briefs, draft, citation review).
 
+The report stage also reads `report_policy_config.json`, which controls the
+number of research rounds, minimum delegated angles, retrieval depth, and
+generation token budgets. That gives the report system a small, explicit tuning
+surface that can be evaluated without inventing a separate deployment path.
+
 Final reports are saved to:
 
 - Postgres table `reports`, and
@@ -268,11 +273,36 @@ Harness files:
 - `autoresearch_detect/export_candidates_snapshot.py`
 - `autoresearch_detect/optimize_detect_policy.py`
 - `autoresearch_detect/fixtures/candidates.json`
+- `autoresearch_report/program.md`
+- `autoresearch_report/eval_report.py`
+- `autoresearch_report/evaluator.py`
+- `autoresearch_report/export_reports_snapshot.py`
+- `autoresearch_report/benchmark_report.py`
+- `autoresearch_report/optimize_report_policy.py`
 
 Run the evaluator on the starter fixture:
 
 ```bash
 .venv/bin/python autoresearch_detect/eval_detect.py
+```
+
+Run the report-quality evaluator against recent reports from Postgres:
+
+```bash
+.venv/bin/python autoresearch_report/eval_report.py --refresh-auto
+```
+
+Benchmark a small fixed set of recent report topics under candidate report
+policies and compare the generated output scores:
+
+```bash
+.venv/bin/python autoresearch_report/benchmark_report.py --refresh-auto --limit 3
+```
+
+Search for the best report policy on recent topics and apply it to the live pipeline:
+
+```bash
+.venv/bin/python autoresearch_report/optimize_report_policy.py --refresh-auto --limit 3
 ```
 
 Export a real candidate snapshot for manual labeling:
