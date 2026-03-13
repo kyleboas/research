@@ -880,14 +880,14 @@ def fetch_youtube(name, channel_id, published_after=None):
     if not resolved_channel_id:
         log.warning("YouTube source %s has non-canonical channel id=%s", name, channel_id)
         counters["youtube_discovery_retryable_failures"] += 1
-        return [], True, counters
+        return [], True, counters, None
     try:
         videos = _youtube_rss_latest_videos(resolved_channel_id)
         counters["youtube_discovery_successes"] += 1
     except TranscriptApiHardDeny:
         counters["youtube_discovery_hard_denies"] += 1
         log.warning("YouTube discovery hard-denied for %s (%s)", name, resolved_channel_id)
-        return [], True, counters
+        return [], True, counters, None
     except HTTPError as e:
         if int(e.code) in RETRYABLE_HTTP_STATUSES:
             counters["youtube_discovery_retryable_failures"] += 1
@@ -897,7 +897,7 @@ def fetch_youtube(name, channel_id, published_after=None):
             resolved_channel_id,
             e.code,
         )
-        return [], True, counters
+        return [], True, counters, None
     except Exception as e:
         counters["youtube_discovery_retryable_failures"] += 1
         log.warning(
@@ -906,7 +906,7 @@ def fetch_youtube(name, channel_id, published_after=None):
             resolved_channel_id,
             e,
         )
-        return [], True, counters
+        return [], True, counters, None
 
     if not videos:
         log.info(
@@ -1551,10 +1551,26 @@ def _coerce_positive_int(value, default: int, *, minimum: int = 1, maximum: int 
     return max(minimum, min(maximum, coerced))
 
 
+def _normalize_text_field(value, default: str) -> str:
+    if value is None:
+        text = default
+    elif isinstance(value, str):
+        text = value
+    elif isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False)
+    else:
+        text = str(value)
+    normalized = text.strip()
+    return normalized or default
+
+
 def _normalize_subagent_task(task, index: int, trend: str, complexity: str = "moderate"):
     raw = task if isinstance(task, dict) else {}
-    angle = (raw.get("angle") or f"angle-{index}").strip()
-    objective = (raw.get("objective") or f"Find the strongest evidence for {trend} from the angle '{angle}'.").strip()
+    angle = _normalize_text_field(raw.get("angle"), f"angle-{index}")
+    objective = _normalize_text_field(
+        raw.get("objective"),
+        f"Find the strongest evidence for {trend} from the angle '{angle}'.",
+    )
     queries = [str(q).strip() for q in raw.get("search_queries", []) if str(q).strip()]
     if not queries:
         queries = [f"{trend} {angle}"]
@@ -1564,15 +1580,18 @@ def _normalize_subagent_task(task, index: int, trend: str, complexity: str = "mo
         "angle": angle,
         "objective": objective,
         "search_queries": queries,
-        "boundaries": (raw.get("boundaries") or "Avoid duplicating other angles and avoid unsupported speculation.").strip(),
-        "output_format": (
-            raw.get("output_format")
-            or "Return a markdown brief with strongest finding first, cited key evidence, limitations, and unresolved questions."
-        ).strip(),
-        "search_guidance": (
-            raw.get("search_guidance")
-            or "Start broad, then narrow toward recent, contradictory, or especially concrete evidence."
-        ).strip(),
+        "boundaries": _normalize_text_field(
+            raw.get("boundaries"),
+            "Avoid duplicating other angles and avoid unsupported speculation.",
+        ),
+        "output_format": _normalize_text_field(
+            raw.get("output_format"),
+            "Return a markdown brief with strongest finding first, cited key evidence, limitations, and unresolved questions.",
+        ),
+        "search_guidance": _normalize_text_field(
+            raw.get("search_guidance"),
+            "Start broad, then narrow toward recent, contradictory, or especially concrete evidence.",
+        ),
         "max_rounds": _coerce_positive_int(raw.get("max_rounds"), default_rounds),
     }
 

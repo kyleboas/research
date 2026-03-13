@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 import main
 
@@ -174,6 +175,26 @@ class PipelineHelperTests(unittest.TestCase):
         self.assertIn("recent", task["search_guidance"])
         self.assertEqual(task["max_rounds"], 3)
 
+    def test_normalize_subagent_task_coerces_structured_text_fields(self):
+        task = _normalize_subagent_task(
+            {
+                "angle": {"name": "Recruitment"},
+                "objective": ["find evidence", "avoid fluff"],
+                "boundaries": {"scope": "Europe only"},
+                "output_format": {"type": "bullet brief"},
+                "search_guidance": ["start broad", "then narrow"],
+            },
+            1,
+            "Midfield diamond resurgence",
+            "moderate",
+        )
+
+        self.assertEqual(task["angle"], '{"name": "Recruitment"}')
+        self.assertEqual(task["objective"], '["find evidence", "avoid fluff"]')
+        self.assertEqual(task["boundaries"], '{"scope": "Europe only"}')
+        self.assertEqual(task["output_format"], '{"type": "bullet brief"}')
+        self.assertEqual(task["search_guidance"], '["start broad", "then narrow"]')
+
     def test_trend_fingerprint_normalizes_punctuation_and_case(self):
         self.assertEqual(normalize_trend_text("High Press in Build-Up!!"), "high press in build up")
         self.assertEqual(
@@ -330,6 +351,28 @@ class PipelineHelperTests(unittest.TestCase):
         self.assertEqual([item["key"] for item in items], ["yt:UC12345678901234567890:new-video"])
         self.assertEqual(counters["youtube_transcript_successes"], 1)
         self.assertEqual(latest_published_at.isoformat(), "2026-03-12T00:00:00+00:00")
+
+    def test_fetch_youtube_http_error_returns_four_tuple_for_ingest_callers(self):
+        with patch.object(
+            main,
+            "_youtube_rss_latest_videos",
+            side_effect=HTTPError(
+                url="https://www.youtube.com/feeds/videos.xml?channel_id=UC12345678901234567890",
+                code=404,
+                msg="Not Found",
+                hdrs=None,
+                fp=None,
+            ),
+        ):
+            items, discovery_failed, counters, latest_published_at = fetch_youtube(
+                "Example",
+                "UC12345678901234567890",
+            )
+
+        self.assertEqual(items, [])
+        self.assertTrue(discovery_failed)
+        self.assertIsNone(latest_published_at)
+        self.assertIn("youtube_discovery_retryable_failures", counters)
 
 
 if __name__ == "__main__":
