@@ -8,6 +8,21 @@ Automated football research workflow that:
 
 The core pipeline lives in `main.py`, with a lightweight dashboard/runner in `server.py`.
 
+## Agent Quickstart
+
+If you are working in this repo with a coding agent, start here:
+
+- [`AGENTS.md`](AGENTS.md): editing rules, entrypoints, and verification commands
+- [`docs/repo-map.md`](docs/repo-map.md): module ownership and change paths
+- `make help`: discover the common run/test commands without reconstructing them
+
+The repo is organized around stable surfaces rather than deep package nesting:
+
+- ingest: `main.py` + `article_extractor.py`
+- detect: `detect_*.py` + `trend_detection.py` + `novelty_scoring.py`
+- report: `main.py`
+- dashboard: `server.py` + `dashboard.html`
+
 ## Pipeline overview
 
 ### 1) Ingest (`--step ingest`)
