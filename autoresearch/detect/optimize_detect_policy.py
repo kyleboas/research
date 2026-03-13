@@ -21,14 +21,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from autoresearch.detect.evaluator import evaluate_items, load_fixture
-from autoresearch.detect.export_candidates_snapshot import export_snapshot
 from autoresearch.bayesian_optimizer import (
     BayesianOptimizer,
-    OptimizationConfig,
     OPTIMIZATION_PRESETS,
-    make_objective_with_budget,
+    clone_optimization_config,
 )
+from autoresearch.detect.evaluator import evaluate_items, load_fixture
+from autoresearch.detect.export_candidates_snapshot import export_snapshot
 from detect_policy import DEFAULT_POLICY, get_policy_path, load_policy, save_policy
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
@@ -194,7 +193,7 @@ def main():
     parser.add_argument("--limit", type=int, default=100, help="Candidate export limit when using --refresh-auto")
     parser.add_argument("--refresh-auto", action="store_true", help="Export a fresh auto-labeled fixture")
     parser.add_argument("--apply", action="store_true", help="Write the best policy to detect_policy_config.json")
-    parser.add_argument("--trials", type=int, default=100, help="Number of optimization trials")
+    parser.add_argument("--trials", type=int, help="Number of optimization trials")
     parser.add_argument("--preset", choices=["fast", "thorough", "budget_constrained", "exploration"],
                         default="fast", help="Optimization preset")
     parser.add_argument("--timeout", type=float, help="Maximum optimization time in seconds")
@@ -229,8 +228,8 @@ def main():
         )
 
     # Setup optimization configuration
-    config = OPTIMIZATION_PRESETS[args.preset]
-    if args.trials:
+    config = clone_optimization_config(OPTIMIZATION_PRESETS[args.preset])
+    if args.trials is not None:
         config.n_trials = args.trials
     if args.timeout:
         config.timeout_seconds = args.timeout
@@ -302,6 +301,8 @@ def main():
     print(f"best={best_metrics['final_score']:.2f}")
     print(f"delta={best_metrics['final_score'] - baseline_metrics['final_score']:.2f}")
     print(f"trials={result['n_trials']} (complete={result['n_complete']}, pruned={result['n_pruned']})")
+    if result.get("stop_reason"):
+        print(f"stop_reason={result['stop_reason']}")
     
     if importance:
         print("\nparameter_importance:")

@@ -59,7 +59,10 @@ Replaces 12,800+ exhaustive grid combinations with intelligent sampling.
 
 **Report Policy** (`autoresearch/report/optimize_report_policy.py`):
 ```bash
-# Budget-constrained optimization (default)
+# Fast optimization (default, Railway-safe)
+python autoresearch/report/optimize_report_policy.py
+
+# Budget-constrained optimization
 python autoresearch/report/optimize_report_policy.py --preset budget_constrained
 
 # Use recent reports for simulation
@@ -76,10 +79,11 @@ Optimizes overlap windows and detection thresholds based on historical lag patte
 
 ### Optimization Presets
 
-- `fast` (30 trials): Quick optimization for development
+- `fast` (30 trials, 5 minute timeout): Default Railway-safe setting for hourly runs
 - `thorough` (200 trials): Comprehensive search for production
 - `budget_constrained` (50 trials): Prioritizes cost-efficient configurations
 - `exploration` (100 trials, no early stopping): Maximum parameter space coverage
+- Runtime guardrails: single-threaded BLAS, post-trial GC, SQLite cache size limit, and a soft RSS stop condition
 
 ### Legacy Mode
 

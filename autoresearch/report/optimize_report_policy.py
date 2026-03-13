@@ -23,13 +23,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from autoresearch.report.evaluator import evaluate_items, load_fixture
-from autoresearch.report.export_reports_snapshot import export_snapshot
 from autoresearch.bayesian_optimizer import (
     BayesianOptimizer,
-    OptimizationConfig,
     OPTIMIZATION_PRESETS,
+    clone_optimization_config,
 )
+from autoresearch.report.evaluator import evaluate_items, load_fixture
+from autoresearch.report.export_reports_snapshot import export_snapshot
 from autoresearch.report.benchmark_report import (
     DEFAULT_MIN_IMPROVEMENT,
     append_result_row,
@@ -250,9 +250,9 @@ def main():
     parser.add_argument("--apply", action="store_true", help="Write the best policy to report_policy_config.json")
     parser.add_argument("--min-improvement", type=float, default=DEFAULT_MIN_IMPROVEMENT,
                         help="Minimum average-score improvement required")
-    parser.add_argument("--trials", type=int, default=80, help="Number of optimization trials")
+    parser.add_argument("--trials", type=int, help="Number of optimization trials")
     parser.add_argument("--preset", choices=["fast", "thorough", "budget_constrained", "exploration"],
-                        default="budget_constrained", help="Optimization preset")
+                        default="fast", help="Optimization preset")
     parser.add_argument("--timeout", type=float, help="Maximum optimization time in seconds")
     parser.add_argument("--warm-start", action="store_true", default=True,
                         help="Warm-start from previous results")
@@ -289,8 +289,8 @@ def main():
     baseline_cost = baseline_result["estimated_cost_per_report"]
 
     # Setup optimization
-    config = OPTIMIZATION_PRESETS[args.preset]
-    if args.trials:
+    config = clone_optimization_config(OPTIMIZATION_PRESETS[args.preset])
+    if args.trials is not None:
         config.n_trials = args.trials
     if args.timeout:
         config.timeout_seconds = args.timeout
@@ -392,6 +392,8 @@ def main():
     print(f"delta={best_result['average_score'] - baseline_result['average_score']:.2f}")
     print(f"quality_per_dollar={float(best_result['quality_per_dollar']):.4f}")
     print(f"trials={result['n_trials']} (complete={result['n_complete']}, pruned={result['n_pruned']})")
+    if result.get("stop_reason"):
+        print(f"stop_reason={result['stop_reason']}")
     print(f"budget_status={budget_status}")
     print(f"policy_changed={'yes' if changed else 'no'}")
     print(f"apply_decision={apply_decision_value}")

@@ -25,13 +25,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from db_conn import resolve_database_conninfo
-from ingest_policy import get_policy_path, load_policy, save_policy
 from autoresearch.bayesian_optimizer import (
     BayesianOptimizer,
-    OptimizationConfig,
     OPTIMIZATION_PRESETS,
+    clone_optimization_config,
 )
+from db_conn import resolve_database_conninfo
+from ingest_policy import get_policy_path, load_policy, save_policy
 
 RESULTS_PATH = Path(__file__).resolve().parent / "results.tsv"
 STUDY_STORAGE_PATH = Path(__file__).resolve().parent / ".study_cache.sqlite"
@@ -355,8 +355,7 @@ def main():
                         help="Write the best ingest policy to ingest_policy_config.json")
     parser.add_argument("--min-improvement", type=float, default=DEFAULT_MIN_IMPROVEMENT,
                         help="Minimum score improvement required before applying")
-    parser.add_argument("--trials", type=int, default=50, 
-                        help="Number of optimization trials")
+    parser.add_argument("--trials", type=int, help="Number of optimization trials")
     parser.add_argument("--preset", choices=["fast", "thorough", "budget_constrained", "exploration"],
                         default="fast", help="Optimization preset")
     parser.add_argument("--timeout", type=float, help="Maximum optimization time in seconds")
@@ -386,8 +385,8 @@ def main():
         baseline_score = score_policy(base_policy, observations)
         
         # Setup optimization
-        config = OPTIMIZATION_PRESETS[args.preset]
-        if args.trials:
+        config = clone_optimization_config(OPTIMIZATION_PRESETS[args.preset])
+        if args.trials is not None:
             config.n_trials = args.trials
         if args.timeout:
             config.timeout_seconds = args.timeout
@@ -484,6 +483,8 @@ def main():
     print(f"delta={best_score - baseline_score:.2f}")
     print(f"min_improvement={float(args.min_improvement):.2f}")
     print(f"trials={result['n_trials']} (complete={result['n_complete']}, pruned={result['n_pruned']})")
+    if result.get("stop_reason"):
+        print(f"stop_reason={result['stop_reason']}")
     print(f"policy_changed={'yes' if changed else 'no'}")
     print(f"apply_decision={result_record['apply_decision']}")
     
