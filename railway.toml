@@ -48,5 +48,5 @@ builder = "nixpacks"
 # After first deploy, run sql/schema.sql via Railway's Postgres query console
 # (or psql) to create the tables.
 
-startCommand = "bash -lc 'if [ -z \"${PIPELINE_STEP}\" ] || [ \"${PIPELINE_STEP}\" = \"web\" ]; then python server.py; elif [ \"${PIPELINE_STEP}\" = \"autoresearch_hourly\" ]; then python autoresearch/pipeline.py; else python main.py --step \"${PIPELINE_STEP}\" ${PIPELINE_FLAGS}; fi'"
+startCommand = "bash -lc 'export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}; if [ -z \"${PIPELINE_STEP}\" ] || [ \"${PIPELINE_STEP}\" = \"web\" ]; then python server.py; elif [ \"${PIPELINE_STEP}\" = \"autoresearch_hourly\" ]; then python autoresearch/pipeline.py; else python main.py --step \"${PIPELINE_STEP}\" ${PIPELINE_FLAGS}; fi'"
 restartPolicyType = "never"
