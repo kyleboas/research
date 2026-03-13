@@ -66,8 +66,10 @@ Final reports are saved to:
 - local `_posts/YYYY/MM/YYYY-MM-DD-<slug>.md` in Jekyll post format.
 
 When `GITHUB_TOKEN` and `GITHUB_REPO` are configured, the same `_posts/...` file
-is also published back into the GitHub repo via the GitHub contents API and the
-stored report metadata includes the resulting GitHub URL.
+is pushed to a dedicated branch, a pull request is opened against
+`GITHUB_BRANCH`, and the stored report metadata includes the resulting PR URL.
+If `DISCORD_WEBHOOK_URL` is configured, the app also posts the new PR link to
+Discord.
 
 Each report run also writes a persistent artifact bundle under `report_runs/<timestamp>-<slug>/` so the lead plan and subagent outputs are stored outside the live prompt chain, following Anthropic's external-memory / artifact pattern.
 
