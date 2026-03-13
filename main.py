@@ -107,7 +107,7 @@ def _make_client(base_url: str):
         default_headers["cf-aig-authorization"] = f"Bearer {CLOUDFLARE_GATEWAY_TOKEN}"
 
     return openai.OpenAI(
-        api_key=CLOUDFLARE_GATEWAY_TOKEN,
+        api_key="",
         base_url=base_url,
         default_headers=default_headers,
     )
