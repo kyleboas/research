@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -8,6 +9,7 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from threading import Lock
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 import psycopg
 from dotenv import load_dotenv
@@ -18,6 +20,7 @@ from detect_policy import compute_final_score
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 PORT = int(os.environ.get("PORT", 8080))
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 
 RUN_COMMANDS = {
     "ingest": [sys.executable, str(ROOT / "main.py"), "--step", "ingest"],
@@ -42,6 +45,222 @@ _step_runs = {
     "detect_policy_optimize": {"status": "idle", "started_at": None, "finished_at": None, "exit_code": None, "log_tail": ""},
 }
 _active_processes = {}
+
+
+def _read_log_text(log_path):
+    if not log_path:
+        return ""
+    try:
+        return Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _discord_notify(content):
+    if not DISCORD_WEBHOOK_URL:
+        return False
+    payload = json.dumps({"content": content}).encode("utf-8")
+    req = Request(
+        DISCORD_WEBHOOK_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "research-server",
+        },
+        method="POST",
+    )
+    with urlopen(req, timeout=30) as response:
+        response.read()
+    return True
+
+
+def _format_detect_candidates_notification(candidates):
+    if not candidates:
+        return ""
+    lines = [f"Detect found {len(candidates)} new trend(s)."]
+    for candidate in candidates[:5]:
+        score = candidate.get("score")
+        novelty = candidate.get("novelty_score")
+        sources = candidate.get("source_diversity")
+        parts = [f"#{candidate['id']} {candidate['trend']}"]
+        if score is not None:
+            parts.append(f"score={score}")
+        if novelty is not None:
+            parts.append(f"novelty={float(novelty):.2f}")
+        if sources is not None:
+            parts.append(f"sources={sources}")
+        lines.append("• " + " | ".join(parts))
+    if len(candidates) > 5:
+        lines.append(f"• +{len(candidates) - 5} more")
+    return "\n".join(lines)
+
+
+def _parse_eval_summary(log_text):
+    text = str(log_text or "")
+    patterns = {
+        "fixture": r"fixture=(.+)",
+        "policy": r"policy=(.+)",
+        "precision_at_k": r"precision_at_(\d+)=(\d+\.\d+)",
+        "pairwise_accuracy": r"pairwise_accuracy=(\d+\.\d+)",
+        "gate_accuracy": r"gate_accuracy=(\d+\.\d+)",
+        "report_recall": r"report_recall=(\d+\.\d+)",
+        "final_score": r"FINAL_SCORE=(\d+\.\d+)",
+    }
+    result = {}
+
+    fixture_match = re.search(patterns["fixture"], text)
+    if fixture_match:
+        result["fixture"] = fixture_match.group(1).strip()
+    policy_match = re.search(patterns["policy"], text)
+    if policy_match:
+        result["policy"] = policy_match.group(1).strip()
+    precision_match = re.search(patterns["precision_at_k"], text)
+    if precision_match:
+        result["top_k"] = int(precision_match.group(1))
+        result["precision_at_k"] = float(precision_match.group(2))
+    for key in ("pairwise_accuracy", "gate_accuracy", "report_recall", "final_score"):
+        match = re.search(patterns[key], text)
+        if match:
+            result[key] = float(match.group(1))
+    return result
+
+
+def _format_eval_notification(summary):
+    if not summary:
+        return "Detect policy eval finished."
+    lines = ["Detect policy eval finished."]
+    if summary.get("final_score") is not None:
+        lines.append(f"• Final score: {summary['final_score']:.2f}")
+    if summary.get("top_k") and summary.get("precision_at_k") is not None:
+        lines.append(f"• Precision@{summary['top_k']}: {summary['precision_at_k']:.4f}")
+    if summary.get("gate_accuracy") is not None:
+        lines.append(f"• Gate accuracy: {summary['gate_accuracy']:.4f}")
+    if summary.get("report_recall") is not None:
+        lines.append(f"• Report recall: {summary['report_recall']:.4f}")
+    return "\n".join(lines)
+
+
+def _parse_optimize_summary(log_text):
+    text = str(log_text or "")
+    result = {}
+    patterns = {
+        "fixture": r"fixture=(.+)",
+        "policy_path": r"policy_path=(.+)",
+        "baseline": r"baseline=(\d+\.\d+)",
+        "best": r"best=(\d+\.\d+)",
+        "delta": r"delta=(-?\d+\.\d+)",
+        "best_policy": r"best_policy=(\{.+\})",
+        "applied_policy": r"applied_policy=(.+)",
+    }
+    for key, pattern in patterns.items():
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        if key in {"baseline", "best", "delta"}:
+            result[key] = float(match.group(1))
+        elif key == "best_policy":
+            try:
+                result[key] = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                result[key] = match.group(1).strip()
+        else:
+            result[key] = match.group(1).strip()
+    return result
+
+
+def _format_optimize_notification(summary, *, policy_changed: bool):
+    if not summary:
+        return f"Detect policy optimize finished.\n• Policy changed: {'yes' if policy_changed else 'no'}"
+    lines = ["Detect policy optimize finished."]
+    if summary.get("baseline") is not None and summary.get("best") is not None:
+        lines.append(f"• Score: {summary['baseline']:.2f} -> {summary['best']:.2f}")
+    if summary.get("delta") is not None:
+        lines.append(f"• Delta: {summary['delta']:+.2f}")
+    lines.append(f"• Policy changed: {'yes' if policy_changed else 'no'}")
+    return "\n".join(lines)
+
+
+def _load_policy_text():
+    policy_path = ROOT / "detect_policy_config.json"
+    try:
+        return policy_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+
+
+def _load_detect_baseline():
+    conninfo, _reason = resolve_database_conninfo()
+    if not conninfo:
+        return {}
+    try:
+        with psycopg.connect(conninfo) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COALESCE(MAX(id), 0) FROM trend_candidates")
+                row = cur.fetchone()
+                return {"max_trend_candidate_id": int((row or [0])[0] or 0)}
+    except Exception:
+        return {}
+
+
+def _load_new_detect_candidates(max_trend_candidate_id):
+    conninfo, _reason = resolve_database_conninfo()
+    if not conninfo:
+        return []
+    with psycopg.connect(conninfo) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    trend,
+                    COALESCE(final_score, score) AS display_score,
+                    novelty_score,
+                    COALESCE(source_diversity, 0) AS source_diversity
+                FROM trend_candidates
+                WHERE id > %s
+                ORDER BY COALESCE(final_score, score) DESC, detected_at DESC, id DESC
+                """,
+                (int(max_trend_candidate_id or 0),),
+            )
+            return [
+                {
+                    "id": row[0],
+                    "trend": row[1] or "Untitled trend",
+                    "score": row[2],
+                    "novelty_score": row[3],
+                    "source_diversity": row[4],
+                }
+                for row in cur.fetchall()
+            ]
+
+
+def _notify_step_completion(step, run_meta, state):
+    if state.get("status") != "success" or not DISCORD_WEBHOOK_URL:
+        return
+
+    if step == "detect":
+        baseline = run_meta.get("baseline") or {}
+        candidates = _load_new_detect_candidates(baseline.get("max_trend_candidate_id", 0))
+        message = _format_detect_candidates_notification(candidates)
+    elif step == "detect_policy_eval":
+        message = _format_eval_notification(_parse_eval_summary(_read_log_text(run_meta.get("log_path"))))
+    elif step == "detect_policy_optimize":
+        before_policy = run_meta.get("policy_before", "")
+        after_policy = _load_policy_text()
+        message = _format_optimize_notification(
+            _parse_optimize_summary(_read_log_text(run_meta.get("log_path"))),
+            policy_changed=before_policy != after_policy,
+        )
+    else:
+        return
+
+    if not message:
+        return
+
+    try:
+        _discord_notify(message)
+    except Exception:
+        pass
 
 
 def _read_log_tail(log_path, max_chars=2000):
@@ -89,6 +308,7 @@ def _refresh_step_runs():
             except Exception:
                 pass
             state["log_tail"] = _read_log_tail(log_path)
+            _notify_step_completion(step, run_meta, state)
 
 
 def _step_runs_snapshot():
@@ -106,6 +326,11 @@ def _start_step_run(step):
 
         log_file = tempfile.NamedTemporaryFile(mode="w+", encoding="utf-8", delete=False)
         cmd = RUN_COMMANDS[step]
+        run_meta = {"log_file": log_file, "log_path": log_file.name}
+        if step == "detect":
+            run_meta["baseline"] = _load_detect_baseline()
+        elif step == "detect_policy_optimize":
+            run_meta["policy_before"] = _load_policy_text()
         proc = subprocess.Popen(
             cmd,
             cwd=ROOT,
@@ -114,7 +339,8 @@ def _start_step_run(step):
             stderr=subprocess.STDOUT,
             text=True,
         )
-        _active_processes[step] = {"proc": proc, "log_file": log_file, "log_path": log_file.name}
+        run_meta["proc"] = proc
+        _active_processes[step] = run_meta
         _step_runs[step] = {
             "status": "running",
             "started_at": _utc_now_iso(),
