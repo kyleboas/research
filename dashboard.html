@@ -401,6 +401,104 @@
         align-items: center;
         margin-top: 4px;
       }
+
+      .chart-card {
+        grid-column: 1 / -1;
+      }
+
+      .chart-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: flex-start;
+      }
+
+      .chart-title {
+        margin: 0;
+        font-size: 1rem;
+      }
+
+      .chart-note {
+        margin: 6px 0 0;
+        color: var(--subtext);
+        font-size: 0.92rem;
+        line-height: 1.45;
+      }
+
+      .chart-pill-row {
+        margin-top: 12px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .chart-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--subtext);
+        font-size: 0.84rem;
+      }
+
+      .chart-pill strong {
+        color: var(--text);
+      }
+
+      .chart-legend {
+        margin-top: 12px;
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        color: var(--subtext);
+        font-size: 0.85rem;
+      }
+
+      .chart-legend-item {
+        display: inline-flex;
+        align-items: center;
+      }
+
+      .chart-legend-swatch {
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        margin-right: 6px;
+        display: inline-block;
+      }
+
+      .chart-legend-quality { background: #2f6fed; }
+      .chart-legend-detect { background: #138a5b; }
+      .chart-legend-report { background: #c67012; }
+      .chart-legend-runtime {
+        background: #dce7ff;
+        border: 1px solid #b4c9ff;
+      }
+
+      .autoresearch-chart {
+        margin-top: 14px;
+        width: 100%;
+        overflow-x: auto;
+      }
+
+      .autoresearch-chart svg {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
+      .chart-empty {
+        margin-top: 14px;
+        padding: 18px;
+        border: 1px dashed var(--line);
+        border-radius: 12px;
+        color: var(--subtext);
+        background: #fff;
+      }
     </style>
   </head>
   <body>
@@ -485,6 +583,161 @@
       const formatNumber = (n) => {
         if (n == null) return "—";
         return Number(n).toLocaleString();
+      };
+
+      const formatSignedNumber = (value, digits = 2) => {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return "—";
+        return `${numeric > 0 ? "+" : ""}${numeric.toFixed(digits)}`;
+      };
+
+      const formatFixed = (value, digits = 2) => {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return "—";
+        return numeric.toFixed(digits);
+      };
+
+      const renderAutoresearchChart = (history) => {
+        const runs = Array.isArray(history) ? history.slice(-16) : [];
+        if (!runs.length) {
+          return `<section class="status-card chart-card"><h2 class="chart-title">Autoresearch improvement</h2><div class="chart-empty">No hourly autoresearch history yet. Run the hourly autoresearch pipeline to start tracking improvement over time.</div></section>`;
+        }
+
+        const width = 820;
+        const height = 320;
+        const margin = { top: 18, right: 54, bottom: 48, left: 42 };
+        const plotWidth = width - margin.left - margin.right;
+        const plotHeight = height - margin.top - margin.bottom;
+        const leftTicks = [0, 25, 50, 75, 100];
+        const runtimeValues = runs
+          .map((run) => Number(run.runtime_minutes))
+          .filter((value) => Number.isFinite(value) && value >= 0);
+        const runtimeMax = Math.max(1, ...runtimeValues);
+        const runtimeTickLabels = [0, runtimeMax];
+        const msValues = runs
+          .map((run) => new Date(run.started_at).getTime())
+          .filter((value) => Number.isFinite(value));
+        const minMs = msValues.length ? Math.min(...msValues) : 0;
+        const maxMs = msValues.length ? Math.max(...msValues) : minMs;
+
+        const xFor = (run, index) => {
+          const ms = new Date(run.started_at).getTime();
+          if (!Number.isFinite(ms) || minMs === maxMs) {
+            const step = runs.length <= 1 ? plotWidth / 2 : (plotWidth / Math.max(1, runs.length - 1)) * index;
+            return margin.left + step;
+          }
+          return margin.left + ((ms - minMs) / Math.max(1, maxMs - minMs)) * plotWidth;
+        };
+        const leftYFor = (value) => margin.top + plotHeight - (Math.max(0, Math.min(100, Number(value))) / 100) * plotHeight;
+        const rightYFor = (value) => margin.top + plotHeight - (Math.max(0, Number(value)) / runtimeMax) * plotHeight;
+
+        const buildLine = (key) => {
+          const segments = [];
+          runs.forEach((run, index) => {
+            const value = Number(run[key]);
+            if (!Number.isFinite(value)) return;
+            const x = xFor(run, index);
+            const y = leftYFor(value);
+            segments.push(`${segments.length ? "L" : "M"} ${x.toFixed(2)} ${y.toFixed(2)}`);
+          });
+          return segments.join(" ");
+        };
+
+        const buildDots = (key, color) =>
+          runs
+            .map((run, index) => {
+              const value = Number(run[key]);
+              if (!Number.isFinite(value)) return "";
+              return `<circle cx="${xFor(run, index).toFixed(2)}" cy="${leftYFor(value).toFixed(2)}" r="3.5" fill="${color}" />`;
+            })
+            .join("");
+
+        const runtimeBars = runs
+          .map((run, index) => {
+            const value = Number(run.runtime_minutes);
+            if (!Number.isFinite(value) || value < 0) return "";
+            const x = xFor(run, index) - 8;
+            const y = rightYFor(value);
+            const barHeight = margin.top + plotHeight - y;
+            return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="16" height="${barHeight.toFixed(2)}" rx="5" fill="#dce7ff" stroke="#b4c9ff" />`;
+          })
+          .join("");
+
+        const gridLines = leftTicks
+          .map((tick) => {
+            const y = leftYFor(tick);
+            return `<line x1="${margin.left}" y1="${y.toFixed(2)}" x2="${width - margin.right}" y2="${y.toFixed(2)}" stroke="#e5e5e7" stroke-dasharray="4 4" />
+              <text x="${margin.left - 8}" y="${(y + 4).toFixed(2)}" text-anchor="end" font-size="11" fill="#6f7177">${tick}</text>`;
+          })
+          .join("");
+
+        const xTicks = runs
+          .map((run, index) => ({ run, index }))
+          .filter(({ index }) => index === 0 || index === runs.length - 1 || index === Math.floor((runs.length - 1) / 2))
+          .map(({ run, index }) => {
+            const x = xFor(run, index);
+            const label = new Date(run.started_at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+            return `<line x1="${x.toFixed(2)}" y1="${height - margin.bottom}" x2="${x.toFixed(2)}" y2="${height - margin.bottom + 6}" stroke="#c9ccd3" />
+              <text x="${x.toFixed(2)}" y="${height - margin.bottom + 22}" text-anchor="middle" font-size="11" fill="#6f7177">${escapeHtml(label)}</text>`;
+          })
+          .join("");
+
+        const latest = runs[runs.length - 1] || {};
+        const previous = runs.length > 1 ? runs[runs.length - 2] : null;
+        const qualityDelta =
+          previous && Number.isFinite(Number(latest.quality_index)) && Number.isFinite(Number(previous.quality_index))
+            ? Number(latest.quality_index) - Number(previous.quality_index)
+            : null;
+
+        return `<section class="status-card chart-card">
+          <div class="chart-header">
+            <div>
+              <h2 class="chart-title">Autoresearch improvement</h2>
+              <p class="chart-note">Score is the average of the stored detect-policy eval and report-quality eval for each hourly autoresearch run. Bars show total runtime in minutes.</p>
+            </div>
+            <div class="chart-pill-row">
+              <span class="chart-pill"><strong>Latest score</strong> ${formatFixed(latest.quality_index)}</span>
+              <span class="chart-pill"><strong>Change vs previous</strong> ${qualityDelta == null ? "—" : formatSignedNumber(qualityDelta)}</span>
+              <span class="chart-pill"><strong>Latest runtime</strong> ${safeText(latest.duration_human, "—")}</span>
+            </div>
+          </div>
+          <div class="chart-legend">
+            <span class="chart-legend-item"><span class="chart-legend-swatch chart-legend-quality"></span>Composite score</span>
+            <span class="chart-legend-item"><span class="chart-legend-swatch chart-legend-detect"></span>Detect eval</span>
+            <span class="chart-legend-item"><span class="chart-legend-swatch chart-legend-report"></span>Report eval</span>
+            <span class="chart-legend-item"><span class="chart-legend-swatch chart-legend-runtime"></span>Runtime</span>
+          </div>
+          <div class="chart-pill-row">
+            <span class="chart-pill"><strong>Latest ingest delta</strong> ${formatSignedNumber(latest.ingest_policy_delta)}</span>
+            <span class="chart-pill"><strong>Latest detect delta</strong> ${formatSignedNumber(latest.detect_policy_delta)}</span>
+            <span class="chart-pill"><strong>Latest report delta</strong> ${formatSignedNumber(latest.report_policy_delta)}</span>
+            <span class="chart-pill"><strong>Report apply</strong> ${escapeHtml(safeText(latest.report_policy_apply_decision, "unknown"))}</span>
+          </div>
+          <div class="autoresearch-chart">
+            <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Autoresearch improvement chart">
+              <text x="${margin.left}" y="12" font-size="11" fill="#6f7177">Score</text>
+              <text x="${width - margin.right}" y="12" font-size="11" fill="#6f7177" text-anchor="end">Runtime (min)</text>
+              ${gridLines}
+              <line x1="${margin.left}" y1="${height - margin.bottom}" x2="${width - margin.right}" y2="${height - margin.bottom}" stroke="#c9ccd3" />
+              <line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${height - margin.bottom}" stroke="#c9ccd3" />
+              <line x1="${width - margin.right}" y1="${margin.top}" x2="${width - margin.right}" y2="${height - margin.bottom}" stroke="#c9ccd3" />
+              ${runtimeBars}
+              <path d="${buildLine("quality_index")}" fill="none" stroke="#2f6fed" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="${buildLine("detect_eval_score")}" fill="none" stroke="#138a5b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.9" />
+              <path d="${buildLine("report_eval_score")}" fill="none" stroke="#c67012" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.9" />
+              ${buildDots("quality_index", "#2f6fed")}
+              ${buildDots("detect_eval_score", "#138a5b")}
+              ${buildDots("report_eval_score", "#c67012")}
+              ${runtimeTickLabels
+                .map((tick) => {
+                  const y = rightYFor(tick);
+                  return `<text x="${width - margin.right + 8}" y="${(y + 4).toFixed(2)}" font-size="11" fill="#6f7177">${formatFixed(tick, tick >= 10 ? 0 : 1)}m</text>`;
+                })
+                .join("")}
+              ${xTicks}
+            </svg>
+          </div>
+        </section>`;
       };
 
       const renderLogs = (items) => {
@@ -859,14 +1112,13 @@
         }
       };
 
-      const renderStatus = (items, debug, stepRuns) => {
+      const renderStatus = (items, debug, stepRuns, autoresearchHistory) => {
         const scheduleCards = [
           { key: "ingest", label: "Next ingest" },
           { key: "detect", label: "Next detect" },
           { key: "report", label: "Next report" },
         ];
 
-        const runEntries = ["ingest", "detect", "rescore", "report", "autoresearch_hourly", "ingest_policy_optimize", "report_policy_eval", "report_policy_benchmark", "report_policy_optimize", "detect_policy_eval", "detect_policy_optimize"].map((name) => ({
         const runEntries = ["ingest", "detect", "rescore", "report", "autoresearch_hourly", "ingest_policy_optimize", "report_policy_eval", "report_policy_benchmark", "report_policy_optimize", "detect_policy_eval", "detect_policy_optimize"].map((name) => ({
           name,
           data: stepRuns?.[name] || { status: "idle" },
@@ -891,6 +1143,7 @@
               `<section class="status-card"><p class="status-label">${entry.label}</p><p class="status-value" data-next-time="${entry.key}">—</p><p class="status-subvalue" data-next-countdown="${entry.key}">Countdown: —</p></section>`
           )
           .join("")}${runtimeCards}
+          ${renderAutoresearchChart(autoresearchHistory)}
           <section class="status-card">
             <p class="status-label">Main pipeline</p>
             <p class="status-subvalue">LLM-backed ingest, detect, rescore, and report generation.</p>
@@ -945,7 +1198,12 @@
           renderDetect(payload.detect || []);
           renderPatterns(payload.patterns || []);
           renderReports(payload.reports || []);
-          renderStatus(payload.status || [], payload.debug || null, payload.step_runs || {});
+          renderStatus(
+            payload.status || [],
+            payload.debug || null,
+            payload.step_runs || {},
+            payload.autoresearch_history || []
+          );
 
           if (payload.warning) {
             logsEl.insertAdjacentHTML(

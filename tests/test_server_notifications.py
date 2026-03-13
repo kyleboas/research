@@ -1,6 +1,7 @@
 import unittest
 
 from server import (
+    _build_autoresearch_history,
     _format_autoresearch_hourly_notification,
     _format_detect_candidates_notification,
     _format_eval_notification,
@@ -20,6 +21,78 @@ from server import (
 
 
 class ServerNotificationTests(unittest.TestCase):
+    def test_build_autoresearch_history_shapes_scores_and_runtime(self):
+        history = _build_autoresearch_history(
+            [
+                {
+                    "id": 12,
+                    "step": "autoresearch_hourly",
+                    "status": "success",
+                    "trigger_source": "autoresearch_pipeline",
+                    "started_at": "2026-03-13T10:00:00+00:00",
+                    "finished_at": "2026-03-13T10:02:18+00:00",
+                    "duration_seconds": 138.4,
+                    "summary": {
+                        "detect_eval_score": "92.50",
+                        "report_eval_score": "78.25",
+                        "ingest_policy_delta": "8.25",
+                        "detect_policy_delta": "1.75",
+                        "report_policy_delta": "2.00",
+                        "report_policy_apply_decision": "applied",
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["id"], 12)
+        self.assertEqual(history[0]["quality_index"], 85.38)
+        self.assertEqual(history[0]["runtime_minutes"], 2.31)
+        self.assertEqual(history[0]["duration_human"], "2m 19s")
+        self.assertEqual(history[0]["detect_eval_score"], 92.5)
+        self.assertEqual(history[0]["report_eval_score"], 78.25)
+        self.assertEqual(history[0]["ingest_policy_delta"], 8.25)
+        self.assertEqual(history[0]["detect_policy_delta"], 1.75)
+        self.assertEqual(history[0]["report_policy_delta"], 2.0)
+        self.assertEqual(history[0]["report_policy_apply_decision"], "applied")
+
+    def test_build_autoresearch_history_ignores_other_steps_and_missing_scores(self):
+        history = _build_autoresearch_history(
+            [
+                {
+                    "id": 3,
+                    "step": "detect",
+                    "status": "success",
+                    "trigger_source": "dashboard",
+                    "started_at": "2026-03-13T09:00:00+00:00",
+                    "finished_at": "2026-03-13T09:01:00+00:00",
+                    "duration_seconds": 60,
+                    "summary": {},
+                },
+                {
+                    "id": 4,
+                    "step": "autoresearch_hourly",
+                    "status": "failed",
+                    "trigger_source": "dashboard",
+                    "started_at": "2026-03-13T11:00:00+00:00",
+                    "finished_at": "2026-03-13T11:03:00+00:00",
+                    "duration_seconds": None,
+                    "summary": {
+                        "total_duration_seconds": "180",
+                        "report_eval_score": "81.50",
+                    },
+                },
+            ]
+        )
+
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["id"], 4)
+        self.assertEqual(history[0]["quality_index"], 81.5)
+        self.assertEqual(history[0]["runtime_minutes"], 3.0)
+        self.assertEqual(history[0]["duration_human"], "3m 0s")
+        self.assertIsNone(history[0]["detect_eval_score"])
+        self.assertEqual(history[0]["report_eval_score"], 81.5)
+
     def test_parse_eval_summary_extracts_scores(self):
         summary = _parse_eval_summary(
             "\n".join(

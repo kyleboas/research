@@ -56,7 +56,6 @@ RUN_COMMANDS = {
         "3",
     ],
     "detect_policy_eval": [sys.executable, str(ROOT / "autoresearch" / "detect" / "eval_detect.py")],
-    "detect_policy_eval": [sys.executable, str(ROOT / "autoresearch" / "detect" / "eval_detect.py")],
     "detect_policy_optimize": [
         sys.executable,
         str(ROOT / "autoresearch" / "detect" / "optimize_detect_policy.py"),
@@ -712,6 +711,101 @@ def _fetch_recent_pipeline_runs(cur, *, limit=40):
     return runs
 
 
+def _summary_float(summary, key):
+    if not isinstance(summary, dict):
+        return None
+    try:
+        value = summary.get(key)
+    except AttributeError:
+        return None
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_autoresearch_history(runs):
+    history = []
+    for run in sorted(runs, key=lambda item: (item.get("started_at") or "", item.get("id") or 0)):
+        if str(run.get("step") or "").lower() != "autoresearch_hourly":
+            continue
+
+        summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+        detect_eval_score = _summary_float(summary, "detect_eval_score")
+        report_eval_score = _summary_float(summary, "report_eval_score")
+        ingest_policy_delta = _summary_float(summary, "ingest_policy_delta")
+        detect_policy_delta = _summary_float(summary, "detect_policy_delta")
+        report_policy_delta = _summary_float(summary, "report_policy_delta")
+
+        duration_seconds = run.get("duration_seconds")
+        if duration_seconds is None:
+            duration_seconds = _summary_float(summary, "total_duration_seconds")
+        if duration_seconds is not None:
+            duration_seconds = round(float(duration_seconds), 3)
+
+        quality_components = [score for score in (detect_eval_score, report_eval_score) if score is not None]
+        quality_index = round(sum(quality_components) / len(quality_components), 2) if quality_components else None
+
+        history.append(
+            {
+                "id": run.get("id"),
+                "status": run.get("status") or "unknown",
+                "trigger_source": run.get("trigger_source") or "unknown",
+                "started_at": run.get("started_at"),
+                "finished_at": run.get("finished_at"),
+                "duration_seconds": duration_seconds,
+                "duration_human": format_duration(duration_seconds) if duration_seconds is not None else None,
+                "runtime_minutes": round(duration_seconds / 60.0, 2) if duration_seconds is not None else None,
+                "quality_index": quality_index,
+                "detect_eval_score": detect_eval_score,
+                "report_eval_score": report_eval_score,
+                "ingest_policy_delta": ingest_policy_delta,
+                "detect_policy_delta": detect_policy_delta,
+                "report_policy_delta": report_policy_delta,
+                "report_policy_apply_decision": summary.get("report_policy_apply_decision") or "unknown",
+            }
+        )
+    return history
+
+
+def _fetch_autoresearch_history(cur, *, limit=24):
+    cur.execute(
+        """
+        SELECT
+            id,
+            step,
+            status,
+            trigger_source,
+            started_at,
+            finished_at,
+            duration_seconds,
+            summary
+        FROM pipeline_runs
+        WHERE step = 'autoresearch_hourly'
+        ORDER BY started_at DESC, id DESC
+        LIMIT %s
+        """,
+        (int(limit),),
+    )
+    runs = []
+    for row in cur.fetchall():
+        runs.append(
+            {
+                "id": row[0],
+                "step": row[1],
+                "status": row[2],
+                "trigger_source": row[3],
+                "started_at": row[4].isoformat() if row[4] else None,
+                "finished_at": row[5].isoformat() if row[5] else None,
+                "duration_seconds": round(float(row[6]), 3) if row[6] is not None else None,
+                "summary": row[7] if isinstance(row[7], dict) else {},
+            }
+        )
+    return _build_autoresearch_history(runs)
+
+
 def _merge_persisted_step_runs(snapshot, recent_runs):
     merged = {key: dict(value) for key, value in snapshot.items()}
     latest_by_step = {}
@@ -1112,6 +1206,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "reports": [],
                 "patterns": [],
                 "status": [],
+                "autoresearch_history": [],
                 "step_runs": _step_runs_snapshot(),
                 "warning": warning,
             }
@@ -1327,6 +1422,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 )
                 state = {row[0]: row[1] for row in cur.fetchall()}
                 recent_pipeline_runs = _fetch_recent_pipeline_runs(cur)
+                autoresearch_history = _fetch_autoresearch_history(cur)
                 step_runs = _merge_persisted_step_runs(_step_runs_snapshot(), recent_pipeline_runs)
 
                 # ── Logs ──
@@ -1392,6 +1488,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "reports": report_items,
             "patterns": pattern_items,
             "status": status_items,
+            "autoresearch_history": autoresearch_history,
             "step_runs": step_runs,
             "debug": {
                 "extraction_breakdown": extraction_breakdown,
