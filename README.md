@@ -69,7 +69,8 @@ When `GITHUB_TOKEN` and `GITHUB_REPO` are configured, the same `_posts/...` file
 is pushed to a dedicated branch, a pull request is opened against
 `GITHUB_BRANCH`, and the stored report metadata includes the resulting PR URL.
 If `DISCORD_WEBHOOK_URL` is configured, the app also posts the new PR link to
-Discord.
+Discord. The same webhook is also used by the Railway dashboard to post alerts
+for newly inserted Detect candidates and detect-policy eval/optimize runs.
 
 Each report run also writes a persistent artifact bundle under `report_runs/<timestamp>-<slug>/` so the lead plan and subagent outputs are stored outside the live prompt chain, following Anthropic's external-memory / artifact pattern.
 
