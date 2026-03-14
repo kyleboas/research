@@ -521,6 +521,12 @@
         return dt.toLocaleString();
       };
 
+      const formatNumber = (value) => {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return safeText(value, "—");
+        return new Intl.NumberFormat().format(numeric);
+      };
+
       const renderEmpty = (container, title, detail = "") => {
         container.innerHTML = `<article class="list-item"><div><h2 class="item-title">${title}</h2><p class="item-sub">${detail}</p></div><span class="item-time">—</span></article>`;
       };
@@ -565,6 +571,154 @@
           return '<span class="badge badge-authority">✓ Authority Source</span>';
         }
         return '';
+      };
+
+      const renderLogs = (items) => {
+        logsEl.innerHTML = "";
+        if (!items.length) {
+          renderEmpty(logsEl, "No recent activity", "New pipeline activity will appear here.");
+          return;
+        }
+
+        items.forEach((item) => {
+          logsEl.insertAdjacentHTML(
+            "beforeend",
+            createListItem({
+              bodyHtml:
+                `<div>` +
+                `<h2 class="item-title">${escapeHtml(safeText(item.event, "Pipeline event"))}</h2>` +
+                `<p class="item-sub">${escapeHtml(safeText(item.detail, "No detail provided."))}</p>` +
+                `</div>`,
+              timeHtml: formatIsoTime(item.time),
+            })
+          );
+        });
+      };
+
+      const renderIngestItems = (items) => {
+        ingestEl.innerHTML = "";
+        if (!items.length) {
+          renderEmpty(ingestEl, "No ingested sources yet", "Run ingest to populate this tab.");
+          return;
+        }
+
+        ingestEl.insertAdjacentHTML(
+          "beforeend",
+          `<p style="color:var(--subtext);margin:8px 0 16px;font-size:0.9rem">` +
+          `${formatNumber(items.length)} recent sources, newest first.</p>`
+        );
+
+        items.forEach((item) => {
+          const sourceType = safeText(item.source_type, "unknown");
+          const byline = [item.author, item.sitename].filter(Boolean).map((part) => escapeHtml(part)).join(" · ");
+          const detailBits = [
+            `<span>${escapeHtml(sourceType)}</span>`,
+            extractionBadge(item.extraction_method),
+            item.content_length ? `<span>${formatNumber(item.content_length)} chars</span>` : "",
+            item.publish_date ? `<span>Published ${escapeHtml(formatIsoTime(item.publish_date))}</span>` : "",
+          ].filter(Boolean).join("");
+
+          ingestEl.insertAdjacentHTML(
+            "beforeend",
+            createListItem({
+              href: item.url || "",
+              targetBlank: Boolean(item.url),
+              bodyHtml:
+                `<div>` +
+                `<h2 class="item-title">${escapeHtml(safeText(item.title, "Untitled source"))}</h2>` +
+                `<p class="item-sub">${escapeHtml(truncate(safeText(item.description, "No preview available."), 180))}</p>` +
+                (byline ? `<p class="item-meta">${byline}</p>` : "") +
+                `<div class="ingest-detail-row">${detailBits}</div>` +
+                `</div>`,
+              timeHtml: formatIsoTime(item.created_at),
+            })
+          );
+        });
+      };
+
+      const submitTrendFeedback = async (trendCandidateId, feedbackKind, button) => {
+        if (!trendCandidateId || !feedbackKind || !button) return;
+
+        const article = button.closest(".trend");
+        const buttons = article ? [...article.querySelectorAll(".feedback-btn")] : [];
+        buttons.forEach((el) => { el.disabled = true; });
+
+        try {
+          const response = await fetch("/api/trend-feedback", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              trend_candidate_id: Number(trendCandidateId),
+              feedback: feedbackKind,
+            }),
+          });
+          const payload = await response.json();
+          if (!response.ok || !payload.ok) {
+            throw new Error(payload.error || "Failed to save feedback");
+          }
+
+          const note = document.createElement("p");
+          note.className = "feedback-note";
+          note.textContent = feedbackKind === "important"
+            ? "Marked as important. Future ranking will reflect this."
+            : "Marked as not important. Future ranking will reflect this.";
+          article?.querySelector(".feedback-note")?.remove();
+          article?.appendChild(note);
+        } catch (error) {
+          alert(`Unable to save feedback: ${error.message}`);
+          buttons.forEach((el) => { el.disabled = false; });
+        }
+      };
+
+      const renderAutoresearchChart = (history) => {
+        if (!Array.isArray(history) || !history.length) {
+          return (
+            `<section class="status-card chart-card">` +
+            `<div class="chart-header"><div><h2 class="chart-title">Autoresearch history</h2>` +
+            `<p class="chart-note">Hourly no-LLM runs will appear here once they complete.</p></div></div>` +
+            `<div class="chart-empty">No autoresearch history yet.</div>` +
+            `</section>`
+          );
+        }
+
+        const recent = [...history].slice(-8).reverse();
+        const latest = recent[0] || {};
+
+        return (
+          `<section class="status-card chart-card">` +
+          `<div class="chart-header">` +
+          `<div>` +
+          `<h2 class="chart-title">Autoresearch history</h2>` +
+          `<p class="chart-note">Recent hourly optimization runs, their quality scores, and runtime.</p>` +
+          `</div>` +
+          `</div>` +
+          `<div class="chart-pill-row">` +
+          `<span class="chart-pill"><strong>Latest status</strong> ${escapeHtml(safeText(latest.status, "unknown"))}</span>` +
+          `<span class="chart-pill"><strong>Quality</strong> ${latest.quality_index == null ? "—" : escapeHtml(String(latest.quality_index))}</span>` +
+          `<span class="chart-pill"><strong>Detect</strong> ${latest.detect_eval_score == null ? "—" : escapeHtml(String(latest.detect_eval_score))}</span>` +
+          `<span class="chart-pill"><strong>Report</strong> ${latest.report_eval_score == null ? "—" : escapeHtml(String(latest.report_eval_score))}</span>` +
+          `<span class="chart-pill"><strong>Runtime</strong> ${escapeHtml(safeText(latest.duration_human, "—"))}</span>` +
+          `</div>` +
+          `<div class="autoresearch-chart">` +
+          `<table class="debug-table">` +
+          `<thead><tr><th>Started</th><th>Status</th><th>Quality</th><th>Detect</th><th>Report</th><th>Runtime</th><th>Trigger</th></tr></thead>` +
+          `<tbody>` +
+          recent.map((run) =>
+            `<tr>` +
+            `<td>${escapeHtml(formatIsoTime(run.started_at))}</td>` +
+            `<td>${escapeHtml(safeText(run.status, "unknown"))}</td>` +
+            `<td>${run.quality_index == null ? "—" : escapeHtml(String(run.quality_index))}</td>` +
+            `<td>${run.detect_eval_score == null ? "—" : escapeHtml(String(run.detect_eval_score))}</td>` +
+            `<td>${run.report_eval_score == null ? "—" : escapeHtml(String(run.report_eval_score))}</td>` +
+            `<td>${escapeHtml(safeText(run.duration_human, "—"))}</td>` +
+            `<td>${escapeHtml(safeText(run.trigger_source, "unknown"))}</td>` +
+            `</tr>`
+          ).join("") +
+          `</tbody>` +
+          `</table>` +
+          `</div>` +
+          `</section>`
+        );
       };
 
       const renderDetect = (items) => {
