@@ -316,7 +316,91 @@
   - Feed: https://marclamberts.substack.com/feed
   - Site: https://marclamberts.substack.com
 
-## 3. Reporters
+## 3. International / Regional
+
+### English-language bridge sources
+
+- **Shogun Soccer** (Ryo Nakagawara)
+  - Feed: https://www.shogunsoccer.com/feed
+  - Site: https://www.shogunsoccer.com
+
+- **K League United** (podcast)
+  - Feed: https://kleagueunited.libsyn.com/rss
+  - Site: https://kleagueunited.com
+
+- **Total Football Analysis**
+  - Feed: https://totalfootballanalysis.com/feed
+  - Site: https://totalfootballanalysis.com
+
+- **Breaking The Lines**
+  - Feed: https://breakingthelines.com/feed/
+  - Site: https://breakingthelines.com
+
+- **Get Concacafed** (Liga MX)
+  - Feed: https://getconcacafed.substack.com/feed
+  - Site: https://getconcacafed.substack.com
+
+- **Analytics FC Blog**
+  - Feed: https://analyticsfc.co.uk/blog/feed/
+  - Site: https://analyticsfc.co.uk/blog/
+
+- **Futbol Sudamericano** (Juan G. Arango)
+  - Feed: https://futbolsudamericano.substack.com/feed
+  - Site: https://futbolsudamericano.substack.com
+
+- **Nordic Football Podcast** (Eliteserien / Allsvenskan)
+  - Feed: https://nordicfootballpod.libsyn.com/rss
+  - Site: https://nordicfootballpod.com
+
+- **Scandinavian Football Analysis**
+  - Feed: https://scandinaviafoot.medium.com/feed
+  - Site: https://medium.com/@scandinaviafoot
+
+- **Tavern of the Taegeuk Warriors** (K-League)
+  - Feed: https://www.taegukwarriors.com/feed/
+  - Site: https://www.taegukwarriors.com
+
+- **Between The Posts**
+  - Feed: https://betweentheposts.net/feed
+  - Site: https://betweentheposts.net
+
+- **Long Ball Futebol Podcast** (Liga Portugal)
+  - Feed: https://rss.com/podcasts/longballfutebol/
+  - Site: https://rss.com/podcasts/longballfutebol/
+
+- **FMF State of Mind** (Liga MX)
+  - Feed: https://www.fmfstateofmind.com/rss/current
+  - Site: https://www.fmfstateofmind.com
+
+### Portuguese-language sources
+
+- **Footure** (Brazilian football)
+  - Feed: https://footure.com.br/feed/
+  - Site: https://footure.com.br
+
+- **Preleção** (Eduardo Cecconi)
+  - Feed: https://eduardocecconi.wordpress.com/feed/
+  - Site: https://eduardocecconi.wordpress.com
+
+- **Categoria Canal**
+  - Feed: https://categoriacanal.com/feed/
+  - Site: https://categoriacanal.com
+
+- **Futebol de Formação** (Tactical Periodization / Portuguese coaching)
+  - Feed: https://www.futeboldeformacao.pt/feed/
+  - Site: https://www.futeboldeformacao.pt
+
+### Spanish-language sources
+
+- **Julián Genoud's Newsletter** (South American / analytical)
+  - Feed: https://juliangenoud.substack.com/feed
+  - Site: https://juliangenoud.substack.com
+
+- **Entrenamiento Táctico** (Mexican / Latin American coaching)
+  - Feed: http://entrenamiento-tactico.blogspot.com/feeds/posts/default
+  - Site: http://entrenamiento-tactico.blogspot.com
+
+## 4. Reporters
 
 - **Barney Ronay - The Guardian**
   - Feed: https://www.theguardian.com/profile/barneyronay/rss
