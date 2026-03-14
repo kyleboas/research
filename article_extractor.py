@@ -10,17 +10,25 @@ full article body using a cascade of extractors:
 Also extracts structured metadata: author, publish date, sitename, etc.
 """
 
+import os
 import logging
 import re
+import threading
+import time
 from datetime import datetime
+from urllib.error import HTTPError
 from urllib.parse import quote
 
 log = logging.getLogger("research")
 DEFUDDLE_BASE_URL = "https://defuddle.md/"
+RETRYABLE_HTTP_STATUSES = {408, 429, 503}
+DEFUDDLE_MIN_INTERVAL_SECONDS = max(0.0, float(os.environ.get("DEFUDDLE_MIN_INTERVAL_SECONDS", "2.0")))
 
 # Lazy imports — these are optional dependencies that gracefully degrade
 _trafilatura = None
 _readability = None
+_defuddle_lock = threading.Lock()
+_defuddle_next_allowed_at = 0.0
 
 
 def _get_trafilatura():
@@ -67,8 +75,27 @@ def _fetch_markdown(url, timeout=20):
             "Accept-Language": "*",
         },
     )
-    with urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", errors="replace")
+    max_attempts = 4
+    for attempt in range(1, max_attempts + 1):
+        _pace_defuddle()
+        try:
+            with urlopen(req, timeout=timeout) as r:
+                return r.read().decode("utf-8", errors="replace")
+        except HTTPError as e:
+            status = int(e.code)
+            if status in RETRYABLE_HTTP_STATUSES and attempt < max_attempts:
+                delay = min(30.0, 5.0 * (2 ** (attempt - 1)))
+                log.warning(
+                    "defuddle article fetch retryable failure status=%s attempt=%s/%s url=%s; retrying in %.2fs",
+                    status,
+                    attempt,
+                    max_attempts,
+                    url,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            raise
 
 
 def _strip_html(html):
@@ -128,6 +155,19 @@ def _normalize_publish_date(raw):
 
 def _defuddle_markdown_url(url):
     return f"{DEFUDDLE_BASE_URL}{quote(str(url or '').strip(), safe=':/?&=#')}"
+
+
+def _pace_defuddle():
+    global _defuddle_next_allowed_at
+    if DEFUDDLE_MIN_INTERVAL_SECONDS <= 0:
+        return
+    with _defuddle_lock:
+        now = time.monotonic()
+        delay = max(0.0, _defuddle_next_allowed_at - now)
+        if delay > 0:
+            time.sleep(delay)
+            now = time.monotonic()
+        _defuddle_next_allowed_at = now + DEFUDDLE_MIN_INTERVAL_SECONDS
 
 
 def _extract_defuddle_article(url):

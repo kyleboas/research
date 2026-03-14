@@ -27,11 +27,12 @@ The repo is organized around stable surfaces rather than deep package nesting:
 
 ### 1) Ingest (`--step ingest`)
 
-- Pulls RSS stories from NewsBlur (`/reader/river_stories`).
+- Pulls RSS stories directly from the feeds listed in `feeds/rss.md`.
 - Pulls recent videos from configured YouTube channels via channel RSS feeds.
 - Fetches transcripts from `defuddle.md` for discovered videos.
-- Runs optional full-text extraction for short RSS bodies (`article_extractor.py`).
+- Fetches full article text for RSS items via `defuddle.md` first, with local extraction fallbacks in `article_extractor.py`.
 - Re-reads a configurable overlap window on incremental runs so late-arriving RSS stories or videos are deduped instead of missed.
+- Uses conservative default pacing for feed fetches, Defuddle requests, and embeddings to reduce rate-limit bursts during ingest.
 - Chunks content and stores embeddings in Postgres (`source_chunks.embedding`).
 
 ### 2) Detect (`--step detect`)
@@ -84,14 +85,14 @@ Each report run also writes a persistent artifact bundle under `report_runs/<tim
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                                Data Sources                                 │
-│  RSS feeds via NewsBlur                         YouTube channels + defuddle.md│
+│  RSS feeds from feeds/rss.md                    YouTube channels + defuddle.md│
 └────────────────────────────────┬─────────────────────────────────────────────┘
                                  │
                                  ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                              Ingestion Layer                                │
 │  main.py::run_ingest                                                        │
-│   • fetch_newsblur() + fetch_youtube()                                      │
+│   • fetch_rss() + fetch_youtube()                                           │
 │   • optional full-text extraction (article_extractor.py)                    │
 │   • chunk_and_embed() → source_chunks (pgvector embeddings)                 │
 └────────────────────────────────┬─────────────────────────────────────────────┘
@@ -141,8 +142,7 @@ Each report run also writes a persistent artifact bundle under `report_runs/<tim
 - Python 3.11+
 - Postgres with `pgvector`
 - Cloudflare AI Gateway URL + token (OpenAI-compatible API endpoint)
-- NewsBlur account credentials
-- internet access to `defuddle.md` for YouTube transcript fetches
+- internet access to `defuddle.md` for RSS article extraction and YouTube transcript fetches
 
 Install dependencies:
 
@@ -162,14 +162,16 @@ Required environment variables (see `env.example`):
 
 - `CLOUDFLARE_GATEWAY_URL`
 - `CLOUDFLARE_GATEWAY_TOKEN`
-- `NEWSBLUR_USERNAME`
-- `NEWSBLUR_PASSWORD`
 - database connection (`DATABASE_URL` or Railway-style `PG*` variables)
 
 Optional ingest safety knobs:
 
 - `RSS_OVERLAP_SECONDS` (default `172800`) adds a 48-hour overlap to incremental RSS fetches.
 - `YOUTUBE_OVERLAP_SECONDS` (default `172800`) adds a 48-hour overlap to per-channel YouTube publication watermarks.
+- `RSS_FETCH_MAX_WORKERS` (default `2`) limits concurrent RSS feed fetches.
+- `RSS_FEED_MIN_INTERVAL_SECONDS` (default `0.75`) spaces out RSS feed requests.
+- `DEFUDDLE_MIN_INTERVAL_SECONDS` (default `2.0`) spaces out Defuddle article/transcript requests.
+- `EMBED_MIN_INTERVAL_SECONDS` (default `1.0`) spaces out embedding API calls.
 
 Model selection defaults come from `config.json` and can be overridden via env vars (`MODEL`, `LEAD_MODEL`, `EMBED_MODEL`, etc.). Use exact provider-prefixed model IDs in `config.json` and env vars; the app no longer rewrites alias model names at runtime.
 
@@ -196,7 +198,7 @@ psql "$DATABASE_URL" -f sql/migrate_multilang.sql
 
 ## Feed configuration
 
-- RSS feed list: `feeds/rss.md` (curated reference list)
+- RSS feed list used by ingestion: `feeds/rss.md`
 - YouTube source list actually used by ingestion: `feeds/youtube.md`
 
 `feeds/youtube.md` format:

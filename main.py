@@ -6,7 +6,7 @@ Architecture mirrors Anthropic's production research system:
   → Synthesis → Sufficiency evaluation → optional re-plan → CitationAgent → Revision
 """
 
-import argparse, base64, hashlib, json, logging, math, os, random, re, time
+import argparse, base64, hashlib, json, logging, math, os, random, re, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -78,6 +78,10 @@ YOUTUBE_OVERLAP_SECONDS = max(
     0,
     int(os.environ.get("YOUTUBE_OVERLAP_SECONDS", str(int(INGEST_POLICY["youtube_overlap_seconds"])))),
 )
+RSS_FETCH_MAX_WORKERS = max(1, int(os.environ.get("RSS_FETCH_MAX_WORKERS", "2")))
+RSS_FEED_MIN_INTERVAL_SECONDS = max(0.0, float(os.environ.get("RSS_FEED_MIN_INTERVAL_SECONDS", "0.75")))
+DEFUDDLE_TRANSCRIPT_MIN_INTERVAL_SECONDS = max(0.0, float(os.environ.get("DEFUDDLE_MIN_INTERVAL_SECONDS", "2.0")))
+EMBED_MIN_INTERVAL_SECONDS = max(0.0, float(os.environ.get("EMBED_MIN_INTERVAL_SECONDS", "1.0")))
 REPORT_POLICY = load_report_policy()
 MAX_RESEARCH_ROUNDS = int(REPORT_POLICY["max_research_rounds"])
 
@@ -87,6 +91,29 @@ def set_report_policy(overrides: dict | None = None) -> dict:
     REPORT_POLICY = load_report_policy(overrides)
     MAX_RESEARCH_ROUNDS = int(REPORT_POLICY["max_research_rounds"])
     return REPORT_POLICY
+
+
+class _RequestPacer:
+    def __init__(self, min_interval_seconds: float):
+        self.min_interval_seconds = max(0.0, float(min_interval_seconds or 0.0))
+        self._lock = threading.Lock()
+        self._next_allowed_at = 0.0
+
+    def wait(self):
+        if self.min_interval_seconds <= 0:
+            return
+        with self._lock:
+            now = time.monotonic()
+            delay = max(0.0, self._next_allowed_at - now)
+            if delay > 0:
+                time.sleep(delay)
+                now = time.monotonic()
+            self._next_allowed_at = now + self.min_interval_seconds
+
+
+_rss_feed_pacer = _RequestPacer(RSS_FEED_MIN_INTERVAL_SECONDS)
+_defuddle_transcript_pacer = _RequestPacer(DEFUDDLE_TRANSCRIPT_MIN_INTERVAL_SECONDS)
+_embed_pacer = _RequestPacer(EMBED_MIN_INTERVAL_SECONDS)
 
 LEAD_MODEL    = os.environ.get("LEAD_MODEL")    or _CFG.get("lead_model",    "anthropic/claude-sonnet-4-6")
 MODEL         = os.environ.get("MODEL")         or _CFG.get("model",         "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast")
@@ -686,6 +713,7 @@ def _rss_source_key(feed_url, entry_id, entry_url, title, published_at):
 
 
 def _fetch_rss_feed_items(feed_name, feed_url, since_dt=None):
+    _rss_feed_pacer.wait()
     req = Request(feed_url, headers={"User-Agent": RSS_FEED_USER_AGENT, "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8"})
     with urlopen(req, timeout=30) as response:
         xml_body = response.read()
@@ -778,7 +806,7 @@ def fetch_rss(since_ts=None):
         return []
 
     items = []
-    max_workers = max(1, min(8, len(feeds)))
+    max_workers = max(1, min(RSS_FETCH_MAX_WORKERS, len(feeds)))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {
             executor.submit(_fetch_rss_feed_items, feed_name, feed_url, since_dt): (feed_name, feed_url)
@@ -821,6 +849,8 @@ def _http_error_details(err):
 
 
 def _http_get_text(url, *, headers=None, label="HTTP request"):
+    if label.startswith("defuddle transcript fetch"):
+        _defuddle_transcript_pacer.wait()
     request_headers = {"User-Agent": DEFUDDLE_USER_AGENT}
     if headers:
         request_headers.update(headers)
@@ -1236,6 +1266,7 @@ def embed(texts):
     max_attempts = 5
     for attempt in range(1, max_attempts + 1):
         try:
+            _embed_pacer.wait()
             resp = client.embeddings.create(model=_resolved_embed_model, input=cleaned_inputs)
             record_llm_usage(resp, model_name=_resolved_embed_model, operation="embedding")
             dense = [None] * total_inputs
