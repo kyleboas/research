@@ -2,5 +2,40 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "python server.py"
-restartPolicyType = "always"
+# Railway config-as-code applies to a single deployment/service only.
+# Create separate Railway services in the dashboard, all pointing to this repo,
+# and use PIPELINE_STEP plus each service's own cron schedule/restart policy.
+#
+# Example service layout:
+#
+#   Service: web
+#     PIPELINE_STEP=web (or leave unset)
+#     No cron schedule
+#     Restart policy: always
+#
+#   Service: ingest
+#     PIPELINE_STEP=ingest
+#     Cron schedule: 0 * * * *
+#     Restart policy: never
+#
+#   Service: detect
+#     PIPELINE_STEP=detect
+#     Cron schedule: 0 */6 * * *
+#     Restart policy: never
+#
+#   Service: report
+#     PIPELINE_STEP=report
+#     Cron schedule: 0 1 * * *
+#     Restart policy: never
+#
+#   Service: autoresearch
+#     PIPELINE_STEP=autoresearch_hourly
+#     Cron schedule: 15 * * * *
+#     Restart policy: never
+#
+# Optional per-service extra CLI flags:
+#   PIPELINE_FLAGS=--min-new-sources-for-detect=5
+#
+# Avoid --step all in production. If you intentionally need a full same-process
+# run, set PIPELINE_STEP=all and PIPELINE_FLAGS=--allow-report-after-detect.
+startCommand = "bash -lc 'export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6${LD_PRELOAD:+:${LD_PRELOAD}}; if [ -z \"${PIPELINE_STEP}\" ] || [ \"${PIPELINE_STEP}\" = \"web\" ]; then python server.py; elif [ \"${PIPELINE_STEP}\" = \"autoresearch_hourly\" ]; then python autoresearch/pipeline.py; else python main.py --step \"${PIPELINE_STEP}\" ${PIPELINE_FLAGS}; fi'"
