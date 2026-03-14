@@ -338,11 +338,11 @@ class BayesianOptimizer:
         for name, value in params.items():
             if isinstance(value, int):
                 distributions[name] = optuna.distributions.IntDistribution(
-                    low=max(0, value - 50), high=value + 50
+                    low=value - 50, high=value + 50
                 )
             elif isinstance(value, float):
                 distributions[name] = optuna.distributions.FloatDistribution(
-                    low=max(0.0, value - 10.0), high=value + 10.0
+                    low=value - 10.0, high=value + 10.0
                 )
             else:
                 distributions[name] = optuna.distributions.CategoricalDistribution([value])
