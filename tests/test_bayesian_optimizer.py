@@ -124,6 +124,22 @@ class TestBayesianOptimizer(unittest.TestCase):
         except ImportError:
             self.skipTest("optuna not installed")
 
+    def test_warm_start_from_results_supports_negative_values(self):
+        try:
+            import optuna  # noqa: F401
+
+            optimizer = BayesianOptimizer(OptimizationConfig(n_trials=10))
+            optimizer.create_study(direction="maximize")
+            previous_results = [
+                {"params": {"many_sources_penalty": -6, "single_source_penalty": -12}, "value": 100.0},
+            ]
+            optimizer.warm_start_from_results(previous_results)
+
+            self.assertEqual(len(optimizer.study.trials), 1)
+            self.assertEqual(optimizer.study.trials[0].params["many_sources_penalty"], -6)
+        except ImportError:
+            self.skipTest("optuna not installed")
+
     def test_get_importance_empty(self):
         try:
             import optuna  # noqa: F401
