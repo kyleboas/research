@@ -81,9 +81,8 @@
       .tab.active { display: block; }
 
       .list-item {
-        display: grid;
-        grid-template-columns: 1fr auto;
-        gap: 12px;
+        display: flex;
+        flex-direction: column;
         border-bottom: 1px solid var(--line);
         padding: 14px 0;
         color: inherit;
@@ -146,9 +145,10 @@
       }
 
       .item-time {
-        align-self: end;
+        align-self: flex-end;
         color: #8f9197;
         font-size: 0.95rem;
+        margin-top: 4px;
       }
 
       .trend {
