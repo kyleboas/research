@@ -345,7 +345,18 @@ def start_run(
 
     save_pipeline_state(conn, f"last_{step}_run_id", str(run_id))
     save_pipeline_state(conn, f"last_{step}_run_started_at", started_at.isoformat())
+    save_pipeline_state(conn, f"last_{step}_run_finished_at", "")
+    save_pipeline_state(conn, f"last_{step}_run_duration_seconds", "")
+    save_pipeline_state(conn, f"last_{step}_run_duration_human", "")
     save_pipeline_state(conn, f"last_{step}_run_status", "running")
+    save_pipeline_state(conn, f"last_{step}_run_exit_code", "")
+    save_pipeline_state(conn, f"last_{step}_run_llm_calls", "0")
+    save_pipeline_state(conn, f"last_{step}_run_llm_prompt_tokens", "0")
+    save_pipeline_state(conn, f"last_{step}_run_llm_completion_tokens", "0")
+    save_pipeline_state(conn, f"last_{step}_run_llm_cached_prompt_tokens", "0")
+    save_pipeline_state(conn, f"last_{step}_run_llm_reasoning_tokens", "0")
+    save_pipeline_state(conn, f"last_{step}_run_llm_total_tokens", "0")
+    save_pipeline_state(conn, f"last_{step}_run_llm_cost_usd", "0.000000")
     save_pipeline_state(conn, f"last_{step}_run_trigger", trigger_source)
     save_pipeline_state(conn, f"last_{step}_run_parent_id", "" if parent_run_id is None else str(parent_run_id))
     return RunHandle(

@@ -63,6 +63,19 @@ RUN_COMMANDS = {
         "--apply",
     ],
 }
+DEFAULT_PERSISTED_RUN_STALE_AFTER_SECONDS = 6 * 60 * 60
+PERSISTED_RUN_STALE_AFTER_SECONDS = {
+    "detect": 2 * 60 * 60,
+    "detect_policy_eval": 2 * 60 * 60,
+    "detect_policy_optimize": 2 * 60 * 60,
+    "ingest": 6 * 60 * 60,
+    "ingest_policy_optimize": 2 * 60 * 60,
+    "report": 6 * 60 * 60,
+    "report_policy_benchmark": 2 * 60 * 60,
+    "report_policy_eval": 2 * 60 * 60,
+    "report_policy_optimize": 2 * 60 * 60,
+    "rescore": 6 * 60 * 60,
+}
 _run_lock = Lock()
 
 
@@ -806,6 +819,60 @@ def _fetch_autoresearch_history(cur, *, limit=24):
     return _build_autoresearch_history(runs)
 
 
+def _parse_run_timestamp(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _reconcile_persisted_step_run(step, current, run, *, now=None):
+    merged = dict(current)
+    merged.update(
+        {
+            "status": run.get("status") or current.get("status"),
+            "started_at": run.get("started_at") or current.get("started_at"),
+            "finished_at": run.get("finished_at") or current.get("finished_at"),
+            "duration_seconds": run.get("duration_seconds"),
+            "duration_human": run.get("duration_human"),
+            "exit_code": run.get("exit_code"),
+        }
+    )
+    if not merged.get("log_tail") and run.get("summary"):
+        merged["log_tail"] = json.dumps(run["summary"], indent=2, sort_keys=True)
+
+    if (merged.get("status") or "").lower() != "running":
+        return merged
+
+    started_at = _parse_run_timestamp(merged.get("started_at"))
+    if started_at is None:
+        return merged
+
+    now = now or utc_now()
+    elapsed_seconds = max(0.0, (now - started_at).total_seconds())
+    stale_after_seconds = PERSISTED_RUN_STALE_AFTER_SECONDS.get(step, DEFAULT_PERSISTED_RUN_STALE_AFTER_SECONDS)
+    if elapsed_seconds < stale_after_seconds:
+        return merged
+
+    stale_note = (
+        f"Marked stale after {format_duration(elapsed_seconds)} without a completion update. "
+        "The latest persisted run likely exited before it could finish bookkeeping."
+    )
+    merged["status"] = "failed"
+    if merged.get("duration_seconds") is None:
+        merged["duration_seconds"] = round(elapsed_seconds, 3)
+    if not merged.get("duration_human") and merged.get("duration_seconds") is not None:
+        merged["duration_human"] = format_duration(merged["duration_seconds"])
+    existing_log = (merged.get("log_tail") or "").strip()
+    merged["log_tail"] = f"{existing_log}\n\n{stale_note}" if existing_log else stale_note
+    return merged
+
+
 def _merge_persisted_step_runs(snapshot, recent_runs):
     merged = {key: dict(value) for key, value in snapshot.items()}
     latest_by_step = {}
@@ -818,18 +885,7 @@ def _merge_persisted_step_runs(snapshot, recent_runs):
         current = merged[step]
         if (current.get("status") or "").lower() == "running":
             continue
-        current.update(
-            {
-                "status": run.get("status") or current.get("status"),
-                "started_at": run.get("started_at") or current.get("started_at"),
-                "finished_at": run.get("finished_at") or current.get("finished_at"),
-                "duration_seconds": run.get("duration_seconds"),
-                "duration_human": run.get("duration_human"),
-                "exit_code": run.get("exit_code"),
-            }
-        )
-        if not current.get("log_tail") and run.get("summary"):
-            current["log_tail"] = json.dumps(run["summary"], indent=2, sort_keys=True)
+        merged[step] = _reconcile_persisted_step_run(step, current, run)
     return merged
 
 

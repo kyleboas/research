@@ -1,4 +1,5 @@
 import unittest
+from datetime import UTC, datetime
 
 from server import (
     _build_autoresearch_history,
@@ -17,10 +18,73 @@ from server import (
     _parse_optimize_summary,
     _parse_report_benchmark_summary,
     _parse_report_eval_summary,
+    _reconcile_persisted_step_run,
 )
 
 
 class ServerNotificationTests(unittest.TestCase):
+    def test_reconcile_persisted_step_run_marks_old_running_run_as_failed(self):
+        current = {
+            "status": "idle",
+            "started_at": None,
+            "finished_at": None,
+            "duration_seconds": None,
+            "duration_human": None,
+            "exit_code": None,
+            "log_tail": "",
+        }
+        run = {
+            "status": "running",
+            "started_at": "2026-03-13T12:00:00+00:00",
+            "finished_at": None,
+            "duration_seconds": None,
+            "duration_human": None,
+            "exit_code": None,
+            "summary": {"trigger_source": "cli"},
+        }
+
+        reconciled = _reconcile_persisted_step_run(
+            "ingest",
+            current,
+            run,
+            now=datetime(2026, 3, 13, 19, 30, tzinfo=UTC),
+        )
+
+        self.assertEqual(reconciled["status"], "failed")
+        self.assertEqual(reconciled["duration_human"], "7h 30m 0s")
+        self.assertIn("Marked stale after 7h 30m 0s", reconciled["log_tail"])
+        self.assertIn('"trigger_source": "cli"', reconciled["log_tail"])
+
+    def test_reconcile_persisted_step_run_keeps_fresh_running_run(self):
+        current = {
+            "status": "idle",
+            "started_at": None,
+            "finished_at": None,
+            "duration_seconds": None,
+            "duration_human": None,
+            "exit_code": None,
+            "log_tail": "",
+        }
+        run = {
+            "status": "running",
+            "started_at": "2026-03-13T12:00:00+00:00",
+            "finished_at": None,
+            "duration_seconds": None,
+            "duration_human": None,
+            "exit_code": None,
+            "summary": {},
+        }
+
+        reconciled = _reconcile_persisted_step_run(
+            "ingest",
+            current,
+            run,
+            now=datetime(2026, 3, 13, 16, 0, tzinfo=UTC),
+        )
+
+        self.assertEqual(reconciled["status"], "running")
+        self.assertEqual(reconciled["log_tail"], "")
+
     def test_build_autoresearch_history_shapes_scores_and_runtime(self):
         history = _build_autoresearch_history(
             [

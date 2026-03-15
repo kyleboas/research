@@ -1,6 +1,8 @@
 import unittest
+from datetime import UTC, datetime
+from unittest.mock import patch
 
-from runtime_logging import format_duration, llm_usage_tracking, record_llm_usage, summarize_llm_usage
+from runtime_logging import format_duration, llm_usage_tracking, record_llm_usage, start_run, summarize_llm_usage
 
 
 class FakeResponse:
@@ -23,6 +25,31 @@ class FakeUsage:
         self.total_tokens = total_tokens
         self.prompt_tokens_details = type("PromptDetails", (), {"cached_tokens": cached_tokens})()
         self.completion_tokens_details = type("CompletionDetails", (), {"reasoning_tokens": reasoning_tokens})()
+
+
+class FakeCursor:
+    def __init__(self):
+        self.executed = []
+
+    def execute(self, query, params=None):
+        self.executed.append((" ".join(query.split()), params))
+
+    def fetchone(self):
+        return (42,)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class FakeConn:
+    def __init__(self):
+        self.cursor_obj = FakeCursor()
+
+    def cursor(self):
+        return self.cursor_obj
 
 
 class RuntimeLoggingTests(unittest.TestCase):
@@ -90,6 +117,30 @@ class RuntimeLoggingTests(unittest.TestCase):
         self.assertEqual(summary["llm_reasoning_tokens"], 5)
         self.assertEqual(summary["llm_total_tokens"], 140)
         self.assertEqual(summary["llm_cost_usd"], 0.012345)
+
+    def test_start_run_clears_stale_run_metadata(self):
+        conn = FakeConn()
+        saved = {}
+
+        def capture_state(_conn, key, value):
+            saved[key] = value
+
+        with patch("runtime_logging.save_pipeline_state", side_effect=capture_state):
+            handle = start_run(
+                conn,
+                step="ingest",
+                trigger_source="cli",
+                started_at=datetime(2026, 3, 13, 12, 0, tzinfo=UTC),
+            )
+
+        self.assertEqual(handle.run_id, 42)
+        self.assertEqual(saved["last_ingest_run_status"], "running")
+        self.assertEqual(saved["last_ingest_run_finished_at"], "")
+        self.assertEqual(saved["last_ingest_run_duration_seconds"], "")
+        self.assertEqual(saved["last_ingest_run_duration_human"], "")
+        self.assertEqual(saved["last_ingest_run_exit_code"], "")
+        self.assertEqual(saved["last_ingest_run_llm_calls"], "0")
+        self.assertEqual(saved["last_ingest_run_llm_cost_usd"], "0.000000")
 
 
 if __name__ == "__main__":
